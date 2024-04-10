@@ -13,7 +13,7 @@ message_list = {*()}
 stocks_df = pd.DataFrame({'stock': ['string stock'],'message':['string message'],'guess':['string guess']})
 
 # Logs into Robinhood for portfolio managing
-# print(r.login(username='amoogat@gmail.com', password=configur.thepass['pass2'], expiresIn = 86400, by_sms= True,store_session=False))
+# print(r.login(username='EMAIL', password=configur.thepass['pass2'], expiresIn = 86400, by_sms= True,store_session=False))
 
 # These are some words for triggering buy/sell
 buy_words = {'buy', 'lotto', 'patience', 'patient', 'entering','swing','grabbing','pt','pt1','took','taking','add','adding',
