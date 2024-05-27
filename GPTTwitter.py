@@ -63,6 +63,13 @@ class GPTTwitter:
         else:
             return 0
 
+    
+    def contains_twitter_pic(url_list):
+        if not url_list:
+            return False
+        return any('pic.twitter' in url for url in url_list)
+
+
     def initialize_webdriver(self):
         options = Options()
         options.add_argument("--headless")  # Run in background without opening a browser window
@@ -78,7 +85,11 @@ class GPTTwitter:
         driver = webdriver.Chrome(service=service, options=options)
         return driver
 
-    def get_jpg_url(self, link):
+    def get_jpg_url(driver, link):
+    max_attempts = 10
+    initial_wait = 0.5
+    max_wait = 10
+    for attempt in range(max_attempts):
         url = None
         try:
             if isinstance(link, list):  # Extract first element if URL is a list
@@ -87,28 +98,36 @@ class GPTTwitter:
                         url = u
                         break
             elif not link:
+                print("No Link Provided")
                 return None
-            if not url.startswith('http'):
-                url = f'https://{url}'
-            print(url)
-            self.driver.get(url)
+            else:
+                url = link
+            if not url:
+                return None
+            url = f'https://{url}'
+            print(f"Attempting to access URL: {url}")
+            driver.get(url)
             # Wait for potential redirects and the page to stabilize
-            WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'img')))
-            time.sleep(1)  # Short sleep to ensure images are loaded
-
-            images = self.driver.find_elements(By.TAG_NAME, "img")
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+            time.sleep(1)  # Extended sleep to ensure the page is loaded
+            images = driver.find_elements(By.TAG_NAME, "img")
             for img in images:
                 img_src = img.get_attribute('src')
                 if 'media' in img_src:
+                    print("img_src: " + img_src)
                     return img_src
 
-        except NoSuchElementException as e:
-            print(f"Element not found for URL {url}: {e}")
-        except TimeoutException as e:
-            print(f"Request timed out for URL {url}: {e}")
+            print("No media images found on the page")
+            return None
         except Exception as e:
             print(f"General error processing URL {url}: {e}")
-        return None
+        wait_time = initial_wait * (2 ** attempt) + random.uniform(0, 1)
+        wait_time = min(wait_time, max_wait)
+        print(f"Retrying in {wait_time:.2f} seconds...")
+        time.sleep(wait_time)
+    print("Maximum attempts reached, aborting")
+    return None
+
 
     def get_response_image(self, text):
         if text == 0:
@@ -155,6 +174,8 @@ class GPTTwitter:
         finally:
             self.driver.quit()
 
+        self.heisenberg_tweets['contains_image_url'] = self.heisenberg_tweets.apply['image_url'].apply(lambda x: self.contains_twitter_pic(x) if x != None else False)
+        self.heisenberg_tweets = heisenberg_tweets[heisenberg_tweets['contains_image_url'] & heisenberg_tweets['jpg_url'].notna()]
         self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['jpg_url'].apply(lambda x: self.get_response_image(x) if x != None else None)
         self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: x.replace('$', '\$') if x and pd.notna(x) else x)
         self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: x.replace('$', '\$') if pd.notna(x) else x)
@@ -186,11 +207,4 @@ class GPTTwitter:
 #gpt_twitter = GPTTwitter(username)
 #gpt_twitter.process_tweets()
 #gpt_twitter.save_to_excel()
-
-sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output.
-Example:
-Text: $PARA Closed\n\nIn 13.11 (yesterday)\n\nOut 13.24\n\n+1%\n+$65 profit\n\nJust trying to reduce long exposure heading into tomorrow. 
-https://t.co/GpCKwDrfky 
-TRANSCRIBED IMAGE DATA: This image describes a stock sale transaction, not an option play like a call or a put. 
-Specifically, it details the sale of 500 shares of PARA (which is the ticker symbol for a stock) at an average fill price of $13.2401. 
-It's a limit order set to sell at $13.24. The negative quantity (-500)
+ 
