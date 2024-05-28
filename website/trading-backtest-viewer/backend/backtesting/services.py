@@ -48,7 +48,7 @@ class MarketEnvironment:
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
-        attempts, wait = 20, 0.001
+        attempts, wait = 3, 0.5
         for attempt in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
@@ -151,9 +151,9 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
     return results
 
 def process_row(row,backtester,param_ranges):
-    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['Ticker'], pd.to_datetime(row['created_at']))
+    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']))
     if data_for_atr is not None and data_for_backtest is not None:
-        return optimize_strategy(row['Ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
+        return optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
     else:
         return []
     
@@ -201,7 +201,7 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id=self.user_id,
-            max_results=20,  # Number of tweets to retrieve (adjust as needed)
+            max_results=10,  # Number of tweets to retrieve (adjust as needed)
             tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields you want to retrieve for each tweet
             media_fields=['preview_image_url', 'url'],
             exclude=['retweets', 'replies'],

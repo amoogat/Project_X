@@ -1,12 +1,16 @@
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-import os, logging
+import logging
+import pandas as pd
 import numpy as np
 from .models import BacktestResult, get_default_strategy
 from .services import parallel_optimize_strategy, GPTTwitter 
 from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
 def return_stock(message):
     if message and len(message.split()) > 1:
@@ -16,7 +20,7 @@ def return_stock(message):
 def return_open_close(message):
     if not message:
         return 0
-    cleaned_message =  message.replace('[','').replace(']','')
+    cleaned_message = message.replace('[','').replace(']','')
     if len(cleaned_message.split()) > 1:
         return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
 
@@ -58,8 +62,7 @@ def upload_file(request):
         Text: \\$AMD Eyeing this name.\n\nIf it can get to 137-138ish tomorrow or next week, then I would buy there. \n\nWhy? 200dma magnet could act as major support.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
 
-        Text: \\$DIS Open\n\nEarnings play\n\nRisk \\$1,670 to make \\$330.\n\nBmo, implied about a 7pt move. https://t.co/nyMZGS23OZ  TRANSCRIBED IMAGE DATA: The image describes a vertical put spread (also known as a bull put spread). This is a type of options strategy that involves selling one put option and buying another put option at a lower strike price but with the same expiration date.\n\nHere's the breakdown of the trade based on the image:\n\n- This is for the stock with the ticker symbol "DIS" (Walt Disney Company), with options expiring on May 10, 2024.\n- The vertical spread involves the 108 and 106 strike prices, meaning you are dealing with 108/106 put options.\n- The strategy specified is a put vertical spread:\n  - Selling 10 put options at the 108 strike price.\n  - Buying 10 put options at the 106 strike price.\n- The prices for the transactions are:\n  - Sold (shorted) the 108 strike put options at \\$0.86 each.\n  - Bought (long) the 106 strike put options at \\$0.53 each.\n- The net credit received for the spread is \\$0.33 per share (since options typically represent 100 shares, the total net credit is \\$33 per contract).\n\nIn summary, the strategy is a bull put spread where you hope the price of Disney (DIS) stays above the higher strike price (108) by the expiration date so that both options expire worthless, and you keep the credit received upfront.
-        Correct Output: [Open DIS Long]
+        Text: \\$DIS Open\n\nEarnings play\n\nRisk \\$1,670 to make \\$330.\n\nBmo, implied about a 7pt move. https://t.co/nyMZGS23OZ  TRANSCRIBED IMAGE DATA: The image describes a vertical put spread (also known as a bull put spread). This is a type of options strategy that involves selling one put option and buying another put option at a lower strike price but with the same expiration date.\n\nHere's the breakdown of the trade based on the image:\n\n- This is for the stock with the ticker symbol "DIS" (Walt Disney Company), with options expiring on May 10, 2024.\n- The vertical spread involves the 108 and 106 strike prices, meaning you are dealing with 108/106 put options.\n- The strategy specified is a put vertical spread:\n  - Selling 10 put options at the 108 strike price.\n  - Buying 10 put options at the 106 strike price.\n- The prices for the transactions are:\n  - Sold (shorted) the 108 strike put options at \\$0.86 each.\n  - Bought (long) the 106 strike put options at \\$0.53 each.\n- The net credit received for the spread is \\$0.33 per share (since options typically represent 100 shares, the total net credit is \\$33 per contract).\n\nIn summary, the strategy is a bull put spread where you hope the price of Disney (DIS) stays above the higher strike price (108) by the expiration date so that both options expire worthless, and you keep the credit
 
         Text: Watchlist for next week:\n\nLong: \\$VIX\n\nShort: \\$FXI, \\$SPY\n\nNeutral: \\$NVDA\n\nSpeculative bounce play on watch: \\$SHOP  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
@@ -84,9 +87,15 @@ def upload_file(request):
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
         
         df = twitter_processor.ht_dynamic.copy()
-        df['Ticker'] = df['result'].apply(return_stock)
-        df['Buy'] = df['result'].apply(return_open_close)
-        df = df[(df['Ticker'].notnull()) & (df['Buy'] == 1)]
+        df['ticker'] = df['result'].apply(return_stock)
+        df['buy'] = df['result'].apply(return_open_close)
+        logging.info(f"Processed DataFrame: {df.head()}")
+        df = df.loc[(df['ticker'].notnull()) & (df['buy'] == 1)]
+        logging.info(f"Filtered DataFrame: {df.head()}")
+
+        # Convert 'created_at' to datetime and remove timezone
+        df['created_at'] = pd.to_datetime(df['created_at']).dt.tz_localize(None)
+        
         logging.info("Optimizing strategy...")
         results = parallel_optimize_strategy(df, param_ranges)
         best_results = results.loc[results.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
@@ -96,7 +105,10 @@ def upload_file(request):
         default_strategy_id = get_default_strategy()
 
         for result in results_list:
-            
+            if not result.get('ticker'):
+                logging.error(f"Missing ticker in result: {result}")
+                return Response({'status': 'error', 'message': 'Missing ticker in result data'}, status=400)
+
             result_data = {
                 'strategy': default_strategy_id,
                 'ticker': result.get('ticker', ''),
