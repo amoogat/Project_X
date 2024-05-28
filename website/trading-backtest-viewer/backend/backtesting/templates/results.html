@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backtest Results</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Backtest Results</h1>
+    {% if results %}
+        <table border="1">
+            <tr>
+                <th>Ticker</th>
+                <th>Created At</th>
+                <th>ATR Multiplier</th>
+                <th>Trailing Stop Multiplier</th>
+                <th>ATR Period</th>
+                <th>Total Return</th>
+                <th>Portfolio Variance</th>
+                <th>Sharpe Ratio</th>
+                <th>Final Equity</th>
+                <th>Maximum Drawdown</th>
+                <th>Successful Trades</th>
+                <th>Minutes Taken</th>
+                <th>Score</th>
+            </tr>
+            {% for result in results %}
+            <tr>
+                <td>{{ result.ticker }}</td>
+                <td>{{ result.created_at }}</td>
+                <td>{{ result.atr_multiplier }}</td>
+                <td>{{ result.trailing_stop_multiplier }}</td>
+                <td>{{ result.atr_period }}</td>
+                <td>{{ result.total_return }}</td>
+                <td>{{ result.portfolio_variance }}</td>
+                <td>{{ result.sharpe_ratio }}</td>
+                <td>{{ result.final_equity }}</td>
+                <td>{{ result.maximum_drawdown }}</td>
+                <td>{{ result.successful_trades }}</td>
+                <td>{{ result.minutes_taken }}</td>
+                <td>{{ result.score }}</td>
+            </tr>            
+            {% endfor %}
+        </table>
+        <canvas id="resultsChart"></canvas>
+        <script>
+            const ctx = document.getElementById('resultsChart').getContext('2d');
+            const labels = [
+                {% for result in results %}
+                    "{{ result.ticker }}",
+                {% endfor %}
+            ];
+            const data = {
+                labels: labels,
+                datasets: [{
+                    label: 'Total Return',
+                    data: [
+                        {% for result in results %}
+                            {{ result.total_return }},
+                        {% endfor %}
+                    ],
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1
+                }]
+            };
+            const config = {
+                type: 'line',
+                data: data,
+            };
+            const resultsChart = new Chart(ctx, config);
+        </script>
+    {% else %}
+        <p>No results available.</p>
+    {% endif %}
+</body>
+</html>

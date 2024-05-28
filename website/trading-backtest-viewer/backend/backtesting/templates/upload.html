@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload Twitter Username</title>
+</head>
+<body>
+    <h1>Upload Twitter Username</h1>
+    <form method="post">
+        {% csrf_token %}
+        <label for="username">Twitter Username:</label>
+        <input type="text" id="username" name="username" required>
+        <button type="submit">Upload</button>
+    </form>
+</body>
+</html>
