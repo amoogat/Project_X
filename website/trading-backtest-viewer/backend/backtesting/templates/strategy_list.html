@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Strategies</title>
+</head>
+<body>
+    <h1>Strategy List</h1>
+    <ul>
+        {% for strategy in strategies %}
+        <li>{{ strategy.name }} - <a href="{% url 'execute_trade' strategy.id %}">Execute</a></li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
