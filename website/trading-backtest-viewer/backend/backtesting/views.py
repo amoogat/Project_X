@@ -13,14 +13,25 @@ from django.views.decorators.csrf import csrf_exempt
 logging.basicConfig(level=logging.INFO)
 
 def return_stock(message):
-    if message and len(message.split()) > 1:
-        return message.split()[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
+    if message:
+        try:
+            # Basic validation to check if the message format is as expected
+            parts = message.split()
+            if len(parts) > 1:
+                # Cleaning up the stock ticker symbol
+                stock = parts[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
+                # Further validation to check if the cleaned stock symbol is alphanumeric
+                if stock.isalnum():
+                    return stock
+        except Exception as e:
+            logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
     return None
+
 
 def return_open_close(message):
     if not message:
         return 0
-    cleaned_message = message.replace('[','').replace(']','')
+    cleaned_message = message.replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','')
     if len(cleaned_message.split()) > 1:
         return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
 
@@ -89,26 +100,18 @@ def upload_file(request):
         df = twitter_processor.ht_dynamic.copy()
         df['ticker'] = df['result'].apply(return_stock)
         df['buy'] = df['result'].apply(return_open_close)
-        logging.info(f"Processed DataFrame: {df.head()}")
         df = df.loc[(df['ticker'].notnull()) & (df['buy'] == 1)]
-        logging.info(f"Filtered DataFrame: {df.head()}")
 
         # Convert 'created_at' to datetime and remove timezone
         df['created_at'] = pd.to_datetime(df['created_at']).dt.tz_localize(None)
         
-        logging.info("Optimizing strategy...")
         results = parallel_optimize_strategy(df, param_ranges)
         best_results = results.loc[results.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
         best_results = best_results.sort_values(by='final_equity', ascending=False)
         results_list = best_results.to_dict('records')
-        logging.info("Saving results...")
         default_strategy_id = get_default_strategy()
 
         for result in results_list:
-            if not result.get('ticker'):
-                logging.error(f"Missing ticker in result: {result}")
-                return Response({'status': 'error', 'message': 'Missing ticker in result data'}, status=400)
-
             result_data = {
                 'strategy': default_strategy_id,
                 'ticker': result.get('ticker', ''),

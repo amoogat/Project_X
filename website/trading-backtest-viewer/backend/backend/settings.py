@@ -15,7 +15,7 @@ import sys
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../..'))
-
+ASGI_APPLICATION = 'myproject.asgi.application'
 # Add the config path to sys.path
 if config_path not in sys.path:
     sys.path.append(config_path)

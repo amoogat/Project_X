@@ -15,6 +15,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from bs4 import BeautifulSoup
+import httpx
+import asyncio
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -48,7 +50,7 @@ class MarketEnvironment:
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
-        attempts, wait = 3, 0.5
+        attempts, wait = 5, 0.01
         for attempt in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
@@ -63,6 +65,8 @@ class MarketEnvironment:
             except Exception as e:
                 time.sleep(wait)
                 wait *= 2
+                if wait > 5:
+                    wait = 0.01
         logging.error(f"Failed to download data for {ticker} after {attempts} attempts.")
         return None, None, None
 
@@ -185,8 +189,9 @@ class GPTTwitter:
         self.user_id = self.get_user_id()
         self.tweets = self.get_tweets()
         self.df = pd.DataFrame(self.tweets.data)
-        self.heisenberg_tweets = None
-        self.ht_dynamic = None
+        self.df["text"] = [(str(i).replace(",", "").replace('$', '').replace('\\', '').replace('*','')) for i in self.df["text"]]
+        self.heisenberg_tweets = pd.DataFrame()
+        self.ht_dynamic = pd.DataFrame()
 
     def get_user_id(self):
         try:
@@ -285,79 +290,121 @@ class GPTTwitter:
         print("Maximum attempts reached, aborting")
         return None
 
-    def get_response_image(self, text) :
-        if text == 0:
+    async def get_response_image(self, text):
+        if not text:
             return "No image available"
         if not isinstance(text, str):
-            print(text)
+            print(f"Unexpected text format: {text}")
             text = text[0]
-        try:
-            response = openai.chat.completions.create(model="gpt-4o", messages=[
-                                {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play like a call or a put please specify."},
-                                    {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": text,
-                                    },
-                                    },
-                                ],
-                                }
-                            ], max_tokens=300,)
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(e)
-            pass
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play like a call or a put please specify."},
+                        {"type": "image_url", "image_url": {"url": text,"detail":"low"}},  # Ensure this matches the expected structure
+                    ]
+                }
+            ],
+            "max_tokens": 300
+        }
 
-    def dynamic_prompting(self, text, sys_prompt, user_prompt):
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": sys_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "text", "text": text}
-                        ]
-                    }
-                ],
-                max_tokens=300,
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(e)
-            pass
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                return response.json()['choices'][0]['message']['content'].strip()
+            else:
+                print(f"Failed to fetch data: {response.text}, Status Code: {response.status_code}")
+                return None
 
+
+    async def dynamic_prompting(self, text, sys_prompt, user_prompt):
+        url = "https://api.openai.com/v1/chat/completions"  
+        headers = {
+            "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": sys_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt + text
+                }
+            ]
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                return response.json()['choices'][0]['message']['content'].strip()
+            else:
+                print(f"Failed to fetch data: {response.text}")
+                return None
+
+    async def fetch_image_responses(self,image_urls):
+        tasks = [self.get_response_image(url) for url in image_urls if url]
+        return await asyncio.gather(*tasks)
+    
+    def clean_response(self, response):
+        return response.replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '')
+    
     def process_tweets(self):
-        self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
-        selected_columns = ['id', 'text', 'created_at', 'image_url']
-        self.heisenberg_tweets = self.df[selected_columns].copy()
+        if not self.df.empty:
+            self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
+            selected_columns = ['id', 'text', 'created_at', 'image_url']
+            self.heisenberg_tweets = self.df[selected_columns].copy()
+            self.heisenberg_tweets['jpg_url'] = self.heisenberg_tweets['image_url'].apply(lambda x: self.get_jpg_url(x) if x else None)            
+            
+            indexed_urls_to_fetch = [(i, url) for i, url in enumerate(self.heisenberg_tweets['jpg_url']) if url is not None]
+            urls_to_fetch = [url for _, url in indexed_urls_to_fetch]
+            
+            if urls_to_fetch:
+                responses = asyncio.run(self.fetch_image_responses(urls_to_fetch))
+                try:
+                    # Use the saved indices to assign responses correctly
+                    for (i, _), response in zip(indexed_urls_to_fetch, responses):
+                        response_content = self.clean_response(response)
+                        self.heisenberg_tweets.at[i, 'image_response'] = response_content
+                except Exception as e:
+                    logging.error(f"Error while mapping responses: {e}")
 
-        try:
-            self.heisenberg_tweets.loc[:, 'jpg_url'] = self.heisenberg_tweets['image_url'].apply(lambda x: self.get_jpg_url(x))
-        finally:
-            self.driver.quit()
+            self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
+            self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
+            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets['text'].astype(str) + ' TRANSCRIBED IMAGE DATA: ' + self.heisenberg_tweets['image_response'].astype(str)
+            self.ht_dynamic = self.heisenberg_tweets.copy()
 
-
-        self.heisenberg_tweets.loc[:,'image_response'] = self.heisenberg_tweets['jpg_url'].apply(lambda x: self.get_response_image(x) if x != None else None)
-        self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: x.replace('$', '\$') if x and pd.notna(x) else x)
-        self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: x.replace('$', '\$') if pd.notna(x) else x)
-        self.heisenberg_tweets['full_response'] = self.heisenberg_tweets['text'].astype(str) + '  TRANSCRIBED IMAGE DATA: ' + self.heisenberg_tweets['image_response'].astype(str)
-
-
+        else:
+            print("No data to process. DataFrame is empty.")
+                    
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
-        cols = ['id', 'created_at', 'full_response']
-        self.ht_dynamic = self.heisenberg_tweets[cols]
-        self.ht_dynamic['result'] = self.ht_dynamic['full_response'].apply(
-            lambda text: self.dynamic_prompting(text, sys_prompt, user_prompt)
-        )
-        self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
-        self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        if self.ht_dynamic is not None and not self.ht_dynamic.empty:
+            async def fetch_and_process_all():
+                tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.ht_dynamic.iterrows()]
+                responses = await asyncio.gather(*tasks)
+                return responses
+
+            # Run the asynchronous tasks and fetch responses
+            responses = asyncio.run(fetch_and_process_all())
+
+            # Check if 'result' column can be added or if it already exists
+            if 'result' in self.ht_dynamic.columns:
+                self.ht_dynamic['result'] = responses
+            else:
+                self.ht_dynamic = self.ht_dynamic.assign(result=responses)
+                
+            self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
+            self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        else:
+            print("No data to process in ht_dynamic DataFrame.")
+            logging.error("ht_dynamic DataFrame is empty or not initialized.")
