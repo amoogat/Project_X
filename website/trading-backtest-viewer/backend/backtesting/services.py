@@ -14,6 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
@@ -206,7 +207,7 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id=self.user_id,
-            max_results=10,  # Number of tweets to retrieve (adjust as needed)
+            max_results=25,  # Number of tweets to retrieve (adjust as needed)
             tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields you want to retrieve for each tweet
             media_fields=['preview_image_url', 'url'],
             exclude=['retweets', 'replies'],
@@ -222,8 +223,17 @@ class GPTTwitter:
             return 0
 
     def initialize_webdriver(self):
-        options = Options()
-        options.add_argument("--headless")  # Run in background without opening a browser window
+        # Grid URL
+        grid_url = "http://192.168.10.7:4444/wd/hub"  # Adjust this to your Selenium Grid URL
+
+        # Desired capabilities
+        capabilities = DesiredCapabilities.CHROME.copy()
+        capabilities['platform'] = "WINDOWS"  # Specify platform as needed
+        capabilities['version'] = "latest"  # Or specify a specific version of the browser
+
+        # Options for Chrome
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -232,8 +242,14 @@ class GPTTwitter:
         options.add_argument("--disable-dev-tools")
         options.add_argument('blink-settings=imagesEnabled=false')
 
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        # Properly set the browserName within the ChromeOptions
+        options.set_capability("browserName", "chrome")  # Ensure browser name is explicitly set
+
+        # Combine options with capabilities
+        driver = webdriver.Remote(
+            command_executor=grid_url,
+            desired_capabilities=options.to_capabilities()  # Use options.to_capabilities() which now includes the browserName
+        )
         return driver
 
     def get_jpg_url(self, link):
@@ -312,8 +328,7 @@ class GPTTwitter:
                         {"type": "image_url", "image_url": {"url": text,"detail":"low"}},  # Ensure this matches the expected structure
                     ]
                 }
-            ],
-            "max_tokens": 300
+            ]
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -382,6 +397,9 @@ class GPTTwitter:
             self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
             self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets['text'].astype(str) + ' TRANSCRIBED IMAGE DATA: ' + self.heisenberg_tweets['image_response'].astype(str)
+            for i,row in self.heisenberg_tweets.iterrows():
+                print(row['full_response'])
+                print('========================')
             self.ht_dynamic = self.heisenberg_tweets.copy()
 
         else:
