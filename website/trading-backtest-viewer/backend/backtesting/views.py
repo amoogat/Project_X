@@ -44,7 +44,12 @@ def upload_file(request):
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
 
         twitter_processor = GPTTwitter(username)
-        twitter_processor.process_tweets()
+        try:
+            twitter_processor.process_tweets()
+        except Exception as e:
+            print(e)
+        finally:
+            twitter_processor.close_drivers()
 
         if twitter_processor.heisenberg_tweets.empty:
             return Response({'status': 'error', 'message': 'Unable to fetch tweets or no tweets found.'}, status=404)

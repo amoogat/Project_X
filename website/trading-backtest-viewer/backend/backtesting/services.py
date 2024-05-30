@@ -6,6 +6,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import openai, random, os, tweepy, time, logging, itertools, pytz, sys
+from itertools import cycle
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -18,6 +19,7 @@ from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
+from selenium.common.exceptions import StaleElementReferenceException
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -186,14 +188,18 @@ class GPTTwitter:
         )
         self.api = tweepy.API(self.auth)
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
-        self.driver = self.initialize_webdriver()
+        self.node_urls = [
+            "http://192.168.10.7:5555/wd/hub",  # url for first chrome node
+            "http://192.168.10.7:5556/wd/hub"   # url for second chrome node
+        ]
         self.user_id = self.get_user_id()
         self.tweets = self.get_tweets()
         self.df = pd.DataFrame(self.tweets.data)
         self.df["text"] = [(str(i).replace(",", "").replace('$', '').replace('\\', '').replace('*','')) for i in self.df["text"]]
         self.heisenberg_tweets = pd.DataFrame()
         self.ht_dynamic = pd.DataFrame()
-
+        self.drivers = []
+        
     def get_user_id(self):
         try:
             user = self.client.get_user(username=self.username)
@@ -223,16 +229,7 @@ class GPTTwitter:
             return 0
 
     def initialize_webdriver(self):
-        # Grid URL
-        grid_url = "http://192.168.10.7:4444/wd/hub"  # Adjust this to your Selenium Grid URL
-
-        # Desired capabilities
-        capabilities = DesiredCapabilities.CHROME.copy()
-        capabilities['platform'] = "WINDOWS"  # Specify platform as needed
-        capabilities['version'] = "latest"  # Or specify a specific version of the browser
-
-        # Options for Chrome
-        options = webdriver.ChromeOptions()
+        options = webdriver.ChromeOptions()  # Example for Chrome, change as needed
         options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
@@ -242,70 +239,20 @@ class GPTTwitter:
         options.add_argument("--disable-dev-tools")
         options.add_argument('blink-settings=imagesEnabled=false')
 
-        # Properly set the browserName within the ChromeOptions
-        options.set_capability("browserName", "chrome")  # Ensure browser name is explicitly set
+        # Specify capabilities if needed, or just rely on default
+        capabilities = options.to_capabilities()
 
-        # Combine options with capabilities
         driver = webdriver.Remote(
-            command_executor=grid_url,
-            desired_capabilities=options.to_capabilities()  # Use options.to_capabilities() which now includes the browserName
+            command_executor="http://192.168.10.7:4444/wd/hub",  # Replace with your hub URL
+            desired_capabilities=capabilities
         )
         return driver
-
-    def get_jpg_url(self, link):
-        max_attempts = 1
-        initial_wait, wait_time = 0.01, 0.01
-        max_wait = 1
-        for attempt in range(max_attempts):
-            url = None
-            try:
-                if isinstance(link, list):  # Extract first element if URL is a list
-                    for u in link:
-                        if "twitter" in u:
-                            url = u
-                            break
-                elif not link:
-                    # print("No Link Provided")
-                    return None
-                else:
-                    url = link
-                if not url:
-                    return None
-                url = f'https://{url}'
-                # print(f"Attempting to access URL: {url}")
-                self.driver.get(url)
-                # Wait for potential redirects and the page to stabilize
-                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-                time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
-                images = self.driver.find_elements(By.TAG_NAME, "img")
-                for img in images:
-                    img_src = img.get_attribute('src')
-                    if 'media' in img_src:
-                        print("img_src: " + img_src)
-                        return img_src
-                # # Wait for potential redirects and the page to stabilize
-                # WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-                # time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
-
-                # # Navigate through each 'article' tag; articles in retweets are nested within the original tweet 'article'
-                # articles = self.driver.find_elements(By.TAG_NAME, "article")
-                # for article in articles:
-                #     images = article.find_elements(By.TAG_NAME, "img")
-                #     for img in images:
-                #         img_src = img.get_attribute('src')
-                #         if 'media' in img_src:
-                #             print("Image source found:", img_src)
-                #             img_sources.append(img_src)
-                print("No media images found on the page")
-                return None
-            except Exception as e:
-                print(f"General error processing URL {url}: {e}")
-            wait_time = min(initial_wait * 2, max_wait)
-            # print(f"Retrying in {wait_time:.2f} seconds...")
-            time.sleep(wait_time)
-        print("Maximum attempts reached, aborting")
-        return None
-
+    
+    def close_drivers(self):
+        for driver in self.drivers:
+            driver.quit()
+        self.drivers = []
+    
     async def get_response_image(self, text):
         if not text:
             return "No image available"
@@ -330,7 +277,6 @@ class GPTTwitter:
                 }
             ]
         }
-
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(url, headers=headers, json=payload)
             if response.status_code == 200:
@@ -372,36 +318,104 @@ class GPTTwitter:
         return await asyncio.gather(*tasks)
     
     def clean_response(self, response):
-        return response.replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '')
+        return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
+    
+    def get_jpg_url(self, driver, link):
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                if isinstance(link, list):  # Extract first element if URL is a list
+                    for u in link:
+                        if "twitter" in u:
+                            link = u
+                            break
+                if not link:
+                    return None
+                url = f'https://{link}'
+                driver.get(url)
+                print(f"Attempting to access URL: {url}")
+                # Wait for potential redirects and the page to stabilize
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+                time.sleep(0.5)  # Extended sleep to ensure the page is loaded
+                images = driver.find_elements(By.TAG_NAME, "img")
+                for img in images:
+                    img_src = img.get_attribute('src')
+                    if 'media' in img_src:
+                        print("img_src: " + img_src)
+                        return img_src
+                print("No media images found on the page")
+                return None
+            except StaleElementReferenceException:
+                time.sleep(1)  # Wait before retrying
+                continue
+            except Exception as e:
+                print(f"General error processing URL {url}: {e}")
+                if attempt == max_attempts - 1:
+                    raise 
+        return None
+    
+    def initialize_webdrivers(self):
+        # Clear existing drivers if any
+        self.close_drivers()
+        # Initialize a WebDriver for each node URL
+        for node_url in self.node_urls:
+            self.drivers.append(self.initialize_webdriver())
+
+    def fetch_images_concurrently(self, links):
+        results = [None] * len(links)  # Pre-fill results with None for each link
+        if len(links) > len(self.drivers):
+            print("Warning: Not enough drivers for the number of links. Some links may not be processed.")
+        # Map each link to a driver, ensuring no more drivers are used than available
+        link_driver_pairs = zip(links, cycle(self.drivers))  # cycle to reuse drivers if more links than drivers
+
+        # Use ThreadPoolExecutor to manage concurrent WebDriver usage
+        with ThreadPoolExecutor(max_workers=len(self.drivers)) as executor:
+            future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
+            for future in as_completed(future_to_link):
+                idx = future_to_link[future]
+                try:
+                    result = future.result()
+                    results[idx] = result  # Place result in the corresponding position
+                    if result:
+                        print(f"Image found for link index {idx}: {result}")
+                    else:
+                        print(f"No image found for link index {idx}.")
+                except Exception as e:
+                    print(f"Error processing link at index {idx}: {str(e)}")
+
+        return results
     
     def process_tweets(self):
         if not self.df.empty:
+            self.initialize_webdrivers()
             self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
             selected_columns = ['id', 'text', 'created_at', 'image_url']
             self.heisenberg_tweets = self.df[selected_columns].copy()
-            self.heisenberg_tweets['jpg_url'] = self.heisenberg_tweets['image_url'].apply(lambda x: self.get_jpg_url(x) if x else None)            
-            
-            indexed_urls_to_fetch = [(i, url) for i, url in enumerate(self.heisenberg_tweets['jpg_url']) if url is not None]
-            urls_to_fetch = [url for _, url in indexed_urls_to_fetch]
-            
-            if urls_to_fetch:
-                responses = asyncio.run(self.fetch_image_responses(urls_to_fetch))
-                try:
-                    # Use the saved indices to assign responses correctly
-                    for (i, _), response in zip(indexed_urls_to_fetch, responses):
-                        response_content = self.clean_response(response)
-                        self.heisenberg_tweets.at[i, 'image_response'] = response_content
-                except Exception as e:
-                    logging.error(f"Error while mapping responses: {e}")
+            self.heisenberg_tweets['image_response'] = None  # Initialize the column to avoid key errors
 
-            self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
-            self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: self.clean_response(x) if pd.notna(x) else x)
-            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets['text'].astype(str) + ' TRANSCRIBED IMAGE DATA: ' + self.heisenberg_tweets['image_response'].astype(str)
-            for i,row in self.heisenberg_tweets.iterrows():
+            urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
+            if urls_to_fetch:
+                print(f"Fetching images for {len(urls_to_fetch)} URLs.")
+                image_urls = self.fetch_images_concurrently(urls_to_fetch)
+                for idx, img_url in enumerate(image_urls):
+                    if img_url:
+                        self.heisenberg_tweets.at[idx, 'jpg_url'] = img_url
+
+            if self.heisenberg_tweets['jpg_url'].any():
+                non_null_urls = self.heisenberg_tweets['jpg_url'].dropna().tolist()
+                image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
+                non_null_indices = self.heisenberg_tweets.index[self.heisenberg_tweets['jpg_url'].notnull()].tolist()
+                for idx, content in zip(non_null_indices, image_responses):
+                    if content:
+                        self.heisenberg_tweets.at[idx, 'image_response'] = self.clean_response(content)
+
+            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
+                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
+            
+            for i, row in self.heisenberg_tweets.iterrows():
                 print(row['full_response'])
                 print('========================')
             self.ht_dynamic = self.heisenberg_tweets.copy()
-
         else:
             print("No data to process. DataFrame is empty.")
                     

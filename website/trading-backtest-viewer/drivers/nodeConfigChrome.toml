@@ -1,0 +1,11 @@
+[server]
+port = 5555  # Unique port for this node
+
+[node]
+hub-url = "http://localhost:4444"  # URL of the hub
+max-sessions = 5  # Maximum number of concurrent sessions
+
+[[driver]]
+name = "chrome"
+max-instances = 5
+path = "C:/chromedriver-win64/chromedriver.exe"  # Path to the geckodriver executable
