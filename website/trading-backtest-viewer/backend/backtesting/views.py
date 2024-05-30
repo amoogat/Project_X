@@ -59,7 +59,7 @@ def upload_file(request):
             'trailing_stop_loss_multiplier': np.arange(1, 3.5, 0.5),
             'atr_periods': [14, 50, 100, 200, 400, 650]
         }
-        sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output.
+        sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output. If the text and image description Ticker differ, go with the text, unless there is no ticker mentioned in the text.
         Example:
         Text: $PARA Closed\n\nIn 13.11 (yesterday)\n\nOut 13.24\n\n+1%\n+$65 profit\n\nJust trying to reduce long exposure heading into tomorrow. 
         https://t.co/GpCKwDrfky 
@@ -97,6 +97,10 @@ def upload_file(request):
 
         Text: For those who want to play the VIX but cannot because cough Robinhood cough, then I suggest SPY puts. It's pretty much the next best alternative.\\n\\nDon't give me that UVXY crap imo.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
+        response: FXI Open
+
+        Text: FXI Open Would not be surprised we get a decent bounce in the Hang Seng tonight and/or tomorrow night. https://t.co/voe0o6sdyQ TRANSCRIBED IMAGE DATA: The image describes the sale of 25 call options for the VIX with a strike price of 12.5 expiring on August 21 2024. It shows that 25 call options were sold (as indicated by the -25) at a price of \$3.35 each. This is evident from the designation C in the options contract which stands for Call.
+        Corect Output: [FXI Open Long]
         """
         user_prompt = "Is this tweet referring to the opening or closing of a stock position? If it is, please also list the corresponding ticker and whether it is long or short. If it is not referring to the opening or closing of a position, simply put neither. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
         
