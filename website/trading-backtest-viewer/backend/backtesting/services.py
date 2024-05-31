@@ -335,7 +335,6 @@ class GPTTwitter:
                     return None
                 url = f'https://{link}'
                 driver.get(url)
-                logging.info(f"Attempting to access URL: {url}")
                 # Wait for potential redirects and the page to stabilize
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
                 time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
@@ -343,7 +342,6 @@ class GPTTwitter:
                 for img in images:
                     img_src = img.get_attribute('src')
                     if 'media' in img_src and 'twimg' in img_src:
-                        logging.info("img_src: " + img_src)
                         return img_src
                 logging.info("No media images found on the page")
             except (StaleElementReferenceException, WebDriverException) as e:
@@ -363,13 +361,11 @@ class GPTTwitter:
 
     def fetch_images_concurrently(self, links):
         results = [None] * len(links)  # Pre-fill results with None for each link
-        if len(links) > len(self.drivers):
-            logging.info("Warning: Not enough drivers for the number of links. Some links may not be processed.")
         # Map each link to a driver, ensuring no more drivers are used than available
         link_driver_pairs = zip(links, cycle(self.drivers))  # cycle to reuse drivers if more links than drivers
 
         # Use ThreadPoolExecutor to manage concurrent WebDriver usage
-        with ThreadPoolExecutor(max_workers=len(self.drivers)) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
             for future in as_completed(future_to_link):
                 idx = future_to_link[future]
