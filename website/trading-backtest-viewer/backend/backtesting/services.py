@@ -6,6 +6,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import openai, random, os, tweepy, time, logging, itertools, pytz, sys
+from itertools import cycle
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -14,7 +15,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
+import httpx
+import asyncio
+from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -41,6 +46,8 @@ class MarketEnvironment:
         return dt
 
     def fetch_market_data(self, ticker, signal_date):
+        if ticker in ['VIX','VVIX']:
+            ticker = 'UVXY'
         if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
             signal_date = self.adjust_to_trading_hours(pytz.timezone('America/New_York').localize(signal_date))
         else:
@@ -48,7 +55,7 @@ class MarketEnvironment:
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
-        attempts, wait = 20, 0.001
+        attempts, wait = 5, 0.01
         for attempt in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
@@ -63,6 +70,8 @@ class MarketEnvironment:
             except Exception as e:
                 time.sleep(wait)
                 wait *= 2
+                if wait > 5:
+                    wait = 0.01
         logging.error(f"Failed to download data for {ticker} after {attempts} attempts.")
         return None, None, None
 
@@ -151,9 +160,9 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
     return results
 
 def process_row(row,backtester,param_ranges):
-    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['Ticker'], pd.to_datetime(row['created_at']))
+    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']))
     if data_for_atr is not None and data_for_backtest is not None:
-        return optimize_strategy(row['Ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
+        return optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
     else:
         return []
     
@@ -181,13 +190,18 @@ class GPTTwitter:
         )
         self.api = tweepy.API(self.auth)
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
-        self.driver = self.initialize_webdriver()
+        self.node_urls = [
+            "http://192.168.10.7:5555/wd/hub",  # url for first chrome node
+            "http://192.168.10.7:5556/wd/hub"   # url for second chrome node
+        ]
         self.user_id = self.get_user_id()
         self.tweets = self.get_tweets()
         self.df = pd.DataFrame(self.tweets.data)
-        self.heisenberg_tweets = None
-        self.ht_dynamic = None
-
+        self.df["text"] = [(str(i).replace(",", "").replace('$', '').replace('\\', '').replace('*','')) for i in self.df["text"]]
+        self.heisenberg_tweets = pd.DataFrame()
+        self.ht_dynamic = pd.DataFrame()
+        self.drivers = []
+        
     def get_user_id(self):
         try:
             user = self.client.get_user(username=self.username)
@@ -201,7 +215,7 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id=self.user_id,
-            max_results=20,  # Number of tweets to retrieve (adjust as needed)
+            max_results=25,  # Number of tweets to retrieve (adjust as needed)
             tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields you want to retrieve for each tweet
             media_fields=['preview_image_url', 'url'],
             exclude=['retweets', 'replies'],
@@ -217,8 +231,8 @@ class GPTTwitter:
             return 0
 
     def initialize_webdriver(self):
-        options = Options()
-        options.add_argument("--headless")  # Run in background without opening a browser window
+        options = webdriver.ChromeOptions()  # Example for Chrome, change as needed
+        options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -227,137 +241,202 @@ class GPTTwitter:
         options.add_argument("--disable-dev-tools")
         options.add_argument('blink-settings=imagesEnabled=false')
 
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        return driver
+        # Specify capabilities if needed, or just rely on default
+        capabilities = options.to_capabilities()
 
-    def get_jpg_url(self, link):
-        max_attempts = 1
-        initial_wait, wait_time = 0.01, 0.01
-        max_wait = 1
+        driver = webdriver.Remote(
+            command_executor="http://192.168.10.7:4444/wd/hub",  # Replace with your hub URL
+            desired_capabilities=capabilities
+        )
+        return driver
+    
+    def close_drivers(self):
+        for driver in self.drivers:
+            driver.quit()
+        self.drivers = []
+    
+    async def get_response_image(self, text):
+        if not text:
+            return "No image available"
+        if not isinstance(text, str):
+            print(f"Unexpected text format: {text}")
+            text = text[0]
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play, please specify if it is ultimately bullish (long) or bearish (short)."},
+                        {"type": "image_url", "image_url": {"url": text}},  # Ensure this matches the expected structure
+                    ]
+                }
+            ]
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                return response.json()['choices'][0]['message']['content'].strip()
+            else:
+                print(f"Failed to fetch data: {response.text}, Status Code: {response.status_code}")
+                return None
+
+
+    async def dynamic_prompting(self, text, sys_prompt, user_prompt):
+        url = "https://api.openai.com/v1/chat/completions"  
+        headers = {
+            "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": sys_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt + text
+                }
+            ]
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                return response.json()['choices'][0]['message']['content'].strip()
+            else:
+                print(f"Failed to fetch data: {response.text}")
+                return None
+
+    async def fetch_image_responses(self,image_urls):
+        tasks = [self.get_response_image(url) for url in image_urls if url]
+        return await asyncio.gather(*tasks)
+    
+    def clean_response(self, response):
+        return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
+    
+    def get_jpg_url(self, driver, link):
+        max_attempts, wait_time = 4, 0.5
         for attempt in range(max_attempts):
-            url = None
             try:
                 if isinstance(link, list):  # Extract first element if URL is a list
                     for u in link:
-                        if "twitter" in u:
-                            url = u
+                        if "twitter" in u and 'x.com' not in u:
+                            link = u
                             break
-                elif not link:
-                    # print("No Link Provided")
+                if not link:
                     return None
-                else:
-                    url = link
-                if not url:
-                    return None
-                url = f'https://{url}'
-                # print(f"Attempting to access URL: {url}")
-                self.driver.get(url)
+                url = f'https://{link}'
+                driver.get(url)
+                logging.info(f"Attempting to access URL: {url}")
                 # Wait for potential redirects and the page to stabilize
-                WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
                 time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
-                images = self.driver.find_elements(By.TAG_NAME, "img")
+                images = driver.find_elements(By.TAG_NAME, "img")
                 for img in images:
                     img_src = img.get_attribute('src')
-                    if 'media' in img_src:
-                        print("img_src: " + img_src)
+                    if 'media' in img_src and 'twimg' in img_src:
+                        logging.info("img_src: " + img_src)
                         return img_src
-                # # Wait for potential redirects and the page to stabilize
-                # WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-                # time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
-
-                # # Navigate through each 'article' tag; articles in retweets are nested within the original tweet 'article'
-                # articles = self.driver.find_elements(By.TAG_NAME, "article")
-                # for article in articles:
-                #     images = article.find_elements(By.TAG_NAME, "img")
-                #     for img in images:
-                #         img_src = img.get_attribute('src')
-                #         if 'media' in img_src:
-                #             print("Image source found:", img_src)
-                #             img_sources.append(img_src)
-                print("No media images found on the page")
-                return None
+                logging.info("No media images found on the page")
+            except (StaleElementReferenceException, WebDriverException) as e:
+                time.sleep(attempt + 0.5)  # Wait before retrying
+                logging.error(f"Attempt {attempt + 1}: Error with {url} - {str(e)}")
             except Exception as e:
-                print(f"General error processing URL {url}: {e}")
-            wait_time = min(initial_wait * 2, max_wait)
-            # print(f"Retrying in {wait_time:.2f} seconds...")
-            time.sleep(wait_time)
-        print("Maximum attempts reached, aborting")
+                if attempt == max_attempts - 1:
+                    logging.error(f"General error processing URL {url}: {e}")
         return None
+    
+    def initialize_webdrivers(self):
+        # Clear existing drivers if any
+        self.close_drivers()
+        # Initialize a WebDriver for each node URL
+        for node_url in self.node_urls:
+            self.drivers.append(self.initialize_webdriver())
 
-    def get_response_image(self, text) :
-        if text == 0:
-            return "No image available"
-        if not isinstance(text, str):
-            print(text)
-            text = text[0]
-        try:
-            response = openai.chat.completions.create(model="gpt-4o", messages=[
-                                {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play like a call or a put please specify."},
-                                    {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": text,
-                                    },
-                                    },
-                                ],
-                                }
-                            ], max_tokens=300,)
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(e)
-            pass
+    def fetch_images_concurrently(self, links):
+        results = [None] * len(links)  # Pre-fill results with None for each link
+        if len(links) > len(self.drivers):
+            logging.info("Warning: Not enough drivers for the number of links. Some links may not be processed.")
+        # Map each link to a driver, ensuring no more drivers are used than available
+        link_driver_pairs = zip(links, cycle(self.drivers))  # cycle to reuse drivers if more links than drivers
 
-    def dynamic_prompting(self, text, sys_prompt, user_prompt):
-        try:
-            response = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": sys_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "text", "text": text}
-                        ]
-                    }
-                ],
-                max_tokens=300,
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(e)
-            pass
-
+        # Use ThreadPoolExecutor to manage concurrent WebDriver usage
+        with ThreadPoolExecutor(max_workers=len(self.drivers)) as executor:
+            future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
+            for future in as_completed(future_to_link):
+                idx = future_to_link[future]
+                try:
+                    result = future.result()
+                    results[idx] = result  # Place result in the corresponding position
+                    if result:
+                        logging.info(f"Image found for link index {idx}: {result}")
+                    else:
+                        logging.info(f"No image found for link index {idx}.")
+                except Exception as e:
+                    logging.info(f"Error processing link at index {idx}: {str(e)}")
+                    results[idx] = None  # Ensure failed results are marked as None
+        return results
+    
     def process_tweets(self):
-        self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
-        selected_columns = ['id', 'text', 'created_at', 'image_url']
-        self.heisenberg_tweets = self.df[selected_columns].copy()
+        if not self.df.empty:
+            self.initialize_webdrivers()
+            self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
+            selected_columns = ['id', 'text', 'created_at', 'image_url']
+            self.heisenberg_tweets = self.df[selected_columns].copy()
+            self.heisenberg_tweets['image_response'] = None  # Initialize the column to avoid key errors
 
-        try:
-            self.heisenberg_tweets.loc[:, 'jpg_url'] = self.heisenberg_tweets['image_url'].apply(lambda x: self.get_jpg_url(x))
-        finally:
-            self.driver.quit()
+            urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
+            if urls_to_fetch:
+                print(f"Fetching images for {len(urls_to_fetch)} URLs.")
+                image_urls = self.fetch_images_concurrently(urls_to_fetch)
+                for idx, img_url in enumerate(image_urls):
+                    if img_url:
+                        self.heisenberg_tweets.at[idx, 'jpg_url'] = img_url
 
+            if self.heisenberg_tweets['jpg_url'].any():
+                non_null_urls = self.heisenberg_tweets['jpg_url'].dropna().tolist()
+                image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
+                non_null_indices = self.heisenberg_tweets.index[self.heisenberg_tweets['jpg_url'].notnull()].tolist()
+                for idx, content in zip(non_null_indices, image_responses):
+                    if content:
+                        self.heisenberg_tweets.at[idx, 'image_response'] = self.clean_response(content)
 
-        self.heisenberg_tweets.loc[:,'image_response'] = self.heisenberg_tweets['jpg_url'].apply(lambda x: self.get_response_image(x) if x != None else None)
-        self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: x.replace('$', '\$') if x and pd.notna(x) else x)
-        self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: x.replace('$', '\$') if pd.notna(x) else x)
-        self.heisenberg_tweets['full_response'] = self.heisenberg_tweets['text'].astype(str) + '  TRANSCRIBED IMAGE DATA: ' + self.heisenberg_tweets['image_response'].astype(str)
-
-
+            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
+                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
+            
+            for i, row in self.heisenberg_tweets.iterrows():
+                print('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']))
+                print('========================')
+            self.ht_dynamic = self.heisenberg_tweets.copy()
+        else:
+            print("No data to process. DataFrame is empty.")
+                    
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
-        cols = ['id', 'created_at', 'full_response']
-        self.ht_dynamic = self.heisenberg_tweets[cols]
-        self.ht_dynamic['result'] = self.ht_dynamic['full_response'].apply(
-            lambda text: self.dynamic_prompting(text, sys_prompt, user_prompt)
-        )
-        self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
-        self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        if self.ht_dynamic is not None and not self.ht_dynamic.empty:
+            async def fetch_and_process_all():
+                tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.ht_dynamic.iterrows()]
+                responses = await asyncio.gather(*tasks)
+                return responses
+
+            # Run the asynchronous tasks and fetch responses
+            responses = asyncio.run(fetch_and_process_all())
+
+            # Check if 'result' column can be added or if it already exists
+            if 'result' in self.ht_dynamic.columns:
+                self.ht_dynamic['result'] = responses
+            else:
+                self.ht_dynamic = self.ht_dynamic.assign(result=responses)
+                
+            self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
+            self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        else:
+            print("No data to process in ht_dynamic DataFrame.")
+            logging.error("ht_dynamic DataFrame is empty or not initialized.")
