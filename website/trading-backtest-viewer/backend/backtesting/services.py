@@ -335,7 +335,6 @@ class GPTTwitter:
                     return None
                 url = f'https://{link}'
                 driver.get(url)
-                logging.info(f"Attempting to access URL: {url}")
                 # Wait for potential redirects and the page to stabilize
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
                 time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
