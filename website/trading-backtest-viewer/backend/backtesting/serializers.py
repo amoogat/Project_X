@@ -1,6 +1,11 @@
 from rest_framework import serializers
-from .models import Strategy, BacktestResult
+from .models import Strategy, BacktestResult, StockData
 
+class StockDataSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockData
+        fields = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']
+        
 class StrategySerializer(serializers.ModelSerializer):
     class Meta:
         model = Strategy

@@ -1,13 +1,15 @@
-from django.shortcuts import render
+from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import logging
 import pandas as pd
 import numpy as np
-from .models import BacktestResult, get_default_strategy
+from .models import BacktestResult, get_default_strategy, StockData
 from .services import parallel_optimize_strategy, GPTTwitter 
-from .serializers import BacktestResultSerializer
+from .serializers import BacktestResultSerializer, StockDataSerializer
 from django.views.decorators.csrf import csrf_exempt
+from django.shortcuts import render, redirect
+from django.http import JsonResponse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +24,8 @@ def return_stock(message):
                 stock = parts[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
                 # Further validation to check if the cleaned stock symbol is alphanumeric
                 if stock.isalnum():
+                    if stock.upper() in ['VIX','VVIX']:
+                        stock = 'UVXY'
                     return stock
         except Exception as e:
             logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
@@ -59,6 +63,7 @@ def upload_file(request):
             'trailing_stop_loss_multiplier': np.arange(1, 3.5, 0.5),
             'atr_periods': [14, 50, 100, 200, 400, 650]
         }
+        
         sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output. If the text and image description Ticker differ, go with the text, unless there is no ticker mentioned in the text.
         Example:
         Text: $PARA Closed\n\nIn 13.11 (yesterday)\n\nOut 13.24\n\n+1%\n+$65 profit\n\nJust trying to reduce long exposure heading into tomorrow. 
@@ -68,7 +73,7 @@ def upload_file(request):
         It's a limit order set to sell at $13.24. The negative quantity (-500) indicates that shares are being sold rather than purchased.
         Correct Output: [Close PARA Long]
 
-        Text: If $META closes above 450, I will do 1,000 jumping jacks.\n\n🙏
+        Text: If $META closes above 450, I will do 1,000 jumping jacks.\n\n
         TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
 
@@ -155,5 +160,27 @@ def results_view(request):
     results = BacktestResult.objects.all()
     return render(request, 'results.html', {'results': results})
 
+@csrf_exempt  # Consider CSRF implications
 def upload_form_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        # Process the username, possibly calling an external API or service
+        return redirect('success_url')  # Redirect after POST
     return render(request, 'upload.html')
+
+class StockDataView(APIView):
+    @csrf_exempt  # Consider CSRF implications
+    def get(self, request, ticker):
+        stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
+        dates = [data.date.strftime('%Y-%m-%d %H:%M:%S') for data in stock_data]
+        prices = [float(data.close) for data in stock_data]
+
+        response_data = {
+            'ticker': ticker,
+            'chartData': {
+                'dates': dates,
+                'prices': prices,
+            }
+        }
+
+        return JsonResponse(response_data)

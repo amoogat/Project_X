@@ -16,10 +16,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
+from.models import StockData
 from bs4 import BeautifulSoup
 import httpx
 import asyncio
 from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
+from django.db import transaction
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -44,10 +46,35 @@ class MarketEnvironment:
         elif dt.hour > 16:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
+    
+    def save_stock_data(self, ticker, data):
+        try:
+            with transaction.atomic():
+                for index, row in data.iterrows():
+                    # Ensure the index (date) is in UTC
+                    index_utc = index.tz_convert('UTC')
+                    StockData.objects.update_or_create(
+                        ticker=ticker,
+                        date=index_utc,
+                        defaults={
+                            'open': row['Open'],
+                            'high': row['High'],
+                            'low': row['Low'],
+                            'close': row['Close'],
+                            'volume': row['Volume'],
+                        }
+                    )
+            logging.info(f"Successfully saved stock data for {ticker}")
+        except Exception as e:
+            logging.error(f"Failed to save stock data for {ticker}: {e}")
 
+                
     def fetch_market_data(self, ticker, signal_date):
         if ticker in ['VIX','VVIX']:
             ticker = 'UVXY'
+        if ticker in ['U','YINN']:
+            logging.error('Ticker is known to not be on RH so it wont work now.')
+            return None,None,None
         if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
             signal_date = self.adjust_to_trading_hours(pytz.timezone('America/New_York').localize(signal_date))
         else:
@@ -55,13 +82,14 @@ class MarketEnvironment:
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
-        attempts, wait = 5, 0.01
+        attempts, wait = 7, 0.1
         for attempt in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
                 if data.empty:
                     continue
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
+                self.save_stock_data(ticker, data)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']
                 data_for_atr = data.loc[:data.index[self.closest_time_index + 1]]
@@ -126,7 +154,7 @@ class Backtester:
         max_drawdown = max(portfolio['Drawdowns']) if portfolio['Drawdowns'] else 0
         avg_trade_gain = np.mean(portfolio['Returns']) if portfolio['Returns'] else 0
         return {
-            'Total Return': total_return,
+            'Total Return': total_return*100,
             'Portfolio Variance': portfolio_variance,
             'Sharpe Ratio': sharpe_ratio,
             'Final Equity': portfolio['Cash'],
@@ -215,8 +243,8 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id=self.user_id,
-            max_results=25,  # Number of tweets to retrieve (adjust as needed)
-            tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields you want to retrieve for each tweet
+            max_results=25,  # Number of tweets to retrieve (can adjust as needed)
+            tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields we  want to retrieve for each tweet
             media_fields=['preview_image_url', 'url'],
             exclude=['retweets', 'replies'],
             expansions=['attachments.media_keys', 'author_id']
@@ -307,13 +335,16 @@ class GPTTwitter:
                 }
             ]
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=payload)
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content'].strip()
-            else:
-                print(f"Failed to fetch data: {response.text}")
-                return None
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content'].strip()
+                else:
+                    print(f"Failed to fetch data: {response.text}")
+                    return None
+            except httpx.RequestTimeout:
+                print("Request timed out")
 
     async def fetch_image_responses(self,image_urls):
         tasks = [self.get_response_image(url) for url in image_urls if url]
