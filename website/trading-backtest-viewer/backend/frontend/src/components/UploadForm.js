@@ -139,7 +139,7 @@ function UploadForm() {
                 <React.Fragment key={index}>
                   <TableRow onClick={() => toggleRow(index)} style={{ cursor: 'pointer' }}>
                     <TableCell component="th" scope="row">{result.ticker || 'N/A'}</TableCell>
-                    <TableCell>{dayjs(result.created_at).tz('America/New_York').format('YYYY-MM-DD hh:mm A') || 'Unknown Date'}</TableCell>
+                    <TableCell>{dayjs(result.created_at).tz('America/New_York').format('MM-DD hh:mm A') || 'Unknown Date'}</TableCell>
                     <TableCell>{result.total_return ? `${result.total_return.toFixed(2)}%` : 'N/A'}</TableCell>
                     <TableCell>
                       <Button>
@@ -157,7 +157,7 @@ function UploadForm() {
                           {result.chartData && (
                             <>
                               <Line data={{
-                                labels: result.chartData.dates.map(date => dayjs(date).tz('America/New_York').format('YYYY-MM-DD hh:mm A')) || [],
+                                labels: result.chartData.dates.map(date => dayjs(date).tz('America/New_York').format('MM-DD hh:mm A')) || [],
                                 datasets: [
                                   {
                                     label: 'Price',
