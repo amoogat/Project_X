@@ -1,15 +1,19 @@
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-import logging
+import logging, pytz, json
 import pandas as pd
 import numpy as np
 from .models import BacktestResult, get_default_strategy, StockData
 from .services import parallel_optimize_strategy, GPTTwitter 
-from .serializers import BacktestResultSerializer, StockDataSerializer
+from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
+from django.db import transaction
+from datetime import datetime, timedelta
+from django.utils.decorators import method_decorator
+from concurrent.futures import ThreadPoolExecutor
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -168,11 +172,14 @@ def upload_form_view(request):
         return redirect('success_url')  # Redirect after POST
     return render(request, 'upload.html')
 
+
+@method_decorator(csrf_exempt, name='dispatch')
 class StockDataView(APIView):
-    @csrf_exempt  # Consider CSRF implications
     def get(self, request, ticker):
+        logging.info(f"Received request for ticker: {ticker}")
+
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [data.date.strftime('%Y-%m-%d %H:%M:%S') for data in stock_data]
+        dates = [(data.date - timedelta(hours=4)).strftime('%Y-%m-%d %I:%M:%S %p') for data in stock_data]
         prices = [float(data.close) for data in stock_data]
 
         response_data = {
@@ -184,3 +191,45 @@ class StockDataView(APIView):
         }
 
         return JsonResponse(response_data)
+
+@csrf_exempt
+def batch_upload(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            ticker = data.get('ticker')
+            stock_data = data.get('stock_data')
+
+            def save_batch(batch):
+                with transaction.atomic():
+                    for entry in batch:
+                        date = entry.get('date')
+                        if isinstance(date, str):
+                            date = datetime.fromisoformat(date)
+                        if not date.tzinfo:
+                            date = pytz.UTC.localize(date)
+                        
+                        StockData.objects.update_or_create(
+                            ticker=ticker,
+                            date=date,
+                            defaults={
+                                'open': entry.get('open', 0.0),
+                                'high': entry.get('high', 0.0),
+                                'low': entry.get('low', 0.0),
+                                'close': entry.get('close', 0.0),
+                                'volume': entry.get('volume', 0),
+                            }
+                        )
+
+            BATCH_SIZE = 1000
+            batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                executor.map(save_batch, batches)
+
+            return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
+        except Exception as e:
+            logging.error(f"Failed to save batch stock data: {e}")
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+    return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)

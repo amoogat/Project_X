@@ -10,6 +10,8 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+const BATCH_SIZE = 100;  // Adjust this value based on your requirements and server capability
+
 function UploadForm() {
   const [username, setUsername] = useState('');
   const [message, setMessage] = useState('');
@@ -34,6 +36,10 @@ function UploadForm() {
               result.chartData = chartResponse.data.chartData;
               result.createdAtIndex = chartResponse.data.chartData.dates.findIndex(date => date === result.created_at);
               setResults(prevResults => [...prevResults, result]);
+              // Call handleBatchUpload for each result
+              if (chartResponse.data.chartData) {
+                handleBatchUpload(result.ticker, chartResponse.data.chartData);
+              }
             })
             .catch(error => {
               console.error('Error fetching chart data:', error);
@@ -44,6 +50,36 @@ function UploadForm() {
         setMessage('Error processing username');
         console.error('Upload error:', error);
       });
+  };
+
+  const handleBatchUpload = (ticker, chartData) => {
+    const stockData = chartData.dates.map((date, index) => ({
+      date: date,
+      close: chartData.prices[index],
+    }));
+  
+    const batches = [];
+    for (let i = 0; i < stockData.length; i += BATCH_SIZE) {
+      const batch = stockData.slice(i, i + BATCH_SIZE);
+      batches.push(batch);
+    }
+  
+    Promise.all(batches.map(batch => 
+      fetch('/api/batch-upload/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': window.csrfToken // Include the CSRF token in the headers
+        },
+        body: JSON.stringify({ ticker, stock_data: batch })
+      })
+    ))
+    .then(() => {
+      console.log('All batches uploaded successfully');
+    })
+    .catch(error => {
+      console.error('Error uploading batches:', error);
+    });
   };
 
   const toggleRow = (index) => {
@@ -104,13 +140,14 @@ function UploadForm() {
                           {result.chartData && (
                             <>
                               <Line data={{
-                                labels: result.chartData.dates.map(date => dayjs(date).tz('America/New_York').format('YYYY-MM-DD HH:mm:ss')) || [],
+                                labels: result.chartData.dates.map(date => dayjs(date).tz('America/New_York').format('YYYY-MM-DD hh:mm A')) || [],
                                 datasets: [
                                   {
                                     label: 'Price',
                                     data: result.chartData.prices || [],
                                     borderColor: 'rgb(75, 192, 192)',
                                     backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                                    order: 2,  // Ensure this dataset is drawn below
                                   },
                                   {
                                     label: 'Created At',
@@ -120,9 +157,10 @@ function UploadForm() {
                                     borderColor: 'rgb(255, 99, 132)',
                                     backgroundColor: 'rgba(255, 99, 132, 0.5)',
                                     pointRadius: result.chartData.dates.map((date, i) =>
-                                      i === result.createdAtIndex ? 5 : 0
+                                      i === result.createdAtIndex ? 7 : 0
                                     ),
-                                    showLine: false
+                                    showLine: false,
+                                    order: 1,  // Ensure this dataset is drawn above
                                   }
                                 ]
                               }} />

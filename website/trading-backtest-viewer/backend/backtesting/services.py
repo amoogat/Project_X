@@ -43,19 +43,21 @@ class MarketEnvironment:
             dt += self.us_bd
         if dt.hour < 9 or (dt.hour == 9 and dt.minute < 30):
             dt = dt.replace(hour=9, minute=30)
-        elif dt.hour > 16:
+        elif dt.hour >= 16:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
-    
+
     def save_stock_data(self, ticker, data):
         try:
             with transaction.atomic():
                 for index, row in data.iterrows():
-                    # Ensure the index (date) is in UTC
-                    index_utc = index.tz_convert('UTC')
+                    if isinstance(index, str):
+                        index = datetime.fromisoformat(index)
+                    if not index.tzinfo:
+                        index = pytz.UTC.localize(index)
                     StockData.objects.update_or_create(
                         ticker=ticker,
-                        date=index_utc,
+                        date=index,
                         defaults={
                             'open': row['Open'],
                             'high': row['High'],
@@ -67,18 +69,16 @@ class MarketEnvironment:
             logging.info(f"Successfully saved stock data for {ticker}")
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {e}")
+            
 
-                
     def fetch_market_data(self, ticker, signal_date):
-        if ticker in ['VIX','VVIX']:
-            ticker = 'UVXY'
         if ticker in ['U','YINN']:
             logging.error('Ticker is known to not be on RH so it wont work now.')
             return None,None,None
+
         if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
-            signal_date = self.adjust_to_trading_hours(pytz.timezone('America/New_York').localize(signal_date))
-        else:
-            signal_date = self.adjust_to_trading_hours(signal_date.tz_convert(pytz.timezone('America/New_York')))
+            signal_date = pytz.timezone('America/New_York').localize(signal_date)
+        signal_date = self.adjust_to_trading_hours(signal_date)
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
@@ -242,12 +242,12 @@ class GPTTwitter:
 
     def get_tweets(self):
         return self.client.get_users_tweets(
-            id=self.user_id,
-            max_results=25,  # Number of tweets to retrieve (can adjust as needed)
-            tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields we  want to retrieve for each tweet
-            media_fields=['preview_image_url', 'url'],
-            exclude=['retweets', 'replies'],
-            expansions=['attachments.media_keys', 'author_id']
+            id = self.user_id,
+            max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
+            tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields we  want to retrieve for each tweet
+            media_fields = ['preview_image_url', 'url'],
+            exclude = ['retweets', 'replies'],
+            expansions = ['attachments.media_keys', 'author_id']
         )
 
     def get_display_url(self, entities):
@@ -354,12 +354,12 @@ class GPTTwitter:
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
     def get_jpg_url(self, driver, link):
-        max_attempts, wait_time = 4, 0.5
+        max_attempts, wait_time = 2, 0.5
         for attempt in range(max_attempts):
             try:
                 if isinstance(link, list):  # Extract first element if URL is a list
                     for u in link:
-                        if "twitter" in u and 'x.com' not in u:
+                        if "twitter" in u:
                             link = u
                             break
                 if not link:
