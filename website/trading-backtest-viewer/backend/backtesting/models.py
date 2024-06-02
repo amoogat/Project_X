@@ -13,17 +13,14 @@ def get_default_strategy():
 class StockData(models.Model):
     ticker = models.CharField(max_length=10,default=' ')
     date = models.DateTimeField(default=datetime.now,blank=True)
-    open = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
-    high = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
-    low = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
     close = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
-    volume = models.BigIntegerField(default = 000000)
 
     def __str__(self):
         return f"{self.ticker} data on {self.date.strftime('%Y-%m-%d')}"
 
 
 class BacktestResult(models.Model):
+    username = models.CharField(max_length=100, default='')  # Add this line
     strategy = models.ForeignKey(Strategy, on_delete=models.CASCADE, related_name='backtest_results', null=True)
     ticker = models.CharField(max_length=10, default=' ')
     created_at = models.DateTimeField(default=datetime.now, blank=True)
@@ -37,7 +34,7 @@ class BacktestResult(models.Model):
     maximum_drawdown = models.FloatField(default=0.0)
     successful_trades = models.IntegerField(default=0)
     minutes_taken = models.IntegerField(default=0)
-    score = models.FloatField(default=0.0) 
+    score = models.FloatField(default=0.0)
 
     def __str__(self):
         return f"{self.ticker} on {self.created_at.strftime('%Y-%m-%d')}"

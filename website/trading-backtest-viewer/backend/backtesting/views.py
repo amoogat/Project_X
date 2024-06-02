@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+debug_mode = False
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
     if message:
@@ -50,12 +50,20 @@ def upload_file(request):
         username = request.data.get('username')
         if not username:
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
+        
+        if not debug_mode:
+            # Check if the username already has data in the database
+            existing_results = BacktestResult.objects.filter(username=username).distinct('ticker', 'created_at')
+            if existing_results.exists():
+                # Serialize and return the existing results
+                serializer = BacktestResultSerializer(existing_results, many=True)
+                return Response({'status': 'success', 'data': serializer.data}, status=200)
 
         twitter_processor = GPTTwitter(username)
         try:
             twitter_processor.process_tweets()
         except Exception as e:
-            print(e)
+            logging.error(str(e))
         finally:
             twitter_processor.close_drivers()
 
@@ -131,6 +139,7 @@ def upload_file(request):
 
         for result in results_list:
             result_data = {
+                'username': username, 
                 'strategy': default_strategy_id,
                 'ticker': result.get('ticker', ''),
                 'created_at': result.get('created_at'),
@@ -151,7 +160,7 @@ def upload_file(request):
             if serializer.is_valid():
                 serializer.save()
             else:
-                logging.error(f"Serializer error: {serializer.errors}")
+                logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
 
         return Response({'status': 'success', 'data': results_list}, status=201)
@@ -176,7 +185,8 @@ def upload_form_view(request):
 @method_decorator(csrf_exempt, name='dispatch')
 class StockDataView(APIView):
     def get(self, request, ticker):
-        logging.info(f"Received request for ticker: {ticker}")
+        if debug_mode:
+            logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
         dates = [(data.date) for data in stock_data]
@@ -208,16 +218,12 @@ def batch_upload(request):
                             date = datetime.fromisoformat(date)
                         if not date.tzinfo:
                             date = pytz.UTC.localize(date)
-                        date = (date - timedelta(hours=4)).strftime('%Y-%m-%d %I:%M:%S %p')
+                        date = (date - timedelta(hours=4)).strftime('%m-%d %I:%M:%S %p')
                         StockData.objects.update_or_create(
                             ticker=ticker,
                             date=date,
                             defaults={
-                                'open': entry.get('open', 0.0),
-                                'high': entry.get('high', 0.0),
-                                'low': entry.get('low', 0.0),
-                                'close': entry.get('close', 0.0),
-                                'volume': entry.get('volume', 0),
+                                'close': entry.get('close', 0.0)
                             }
                         )
 
@@ -229,7 +235,7 @@ def batch_upload(request):
 
             return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
         except Exception as e:
-            logging.error(f"Failed to save batch stock data: {e}")
+            logging.error(f"Failed to save batch stock data: {str(e)}")
             return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)
