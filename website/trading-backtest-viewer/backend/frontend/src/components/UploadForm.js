@@ -10,7 +10,7 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-const BATCH_SIZE = 100;  // Adjust this value based on your requirements and server capability
+const BATCH_SIZE = 1000;  // Adjust this value based on your requirements and server capability
 
 function UploadForm() {
   const [username, setUsername] = useState('');
@@ -34,7 +34,7 @@ function UploadForm() {
           API.get(`/api/stockdata/${result.ticker}/`)
             .then(chartResponse => {
               result.chartData = chartResponse.data.chartData;
-              result.createdAtIndex = chartResponse.data.chartData.dates.findIndex(date => date === result.created_at);
+              result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
               setResults(prevResults => [...prevResults, result]);
               // Call handleBatchUpload for each result
               if (chartResponse.data.chartData) {
@@ -50,6 +50,23 @@ function UploadForm() {
         setMessage('Error processing username');
         console.error('Upload error:', error);
       });
+  };
+
+  const findNearestIndex = (dates, targetDate) => {
+    const targetTime = dayjs(targetDate).tz('America/New_York').valueOf();
+    let nearestIndex = 0;
+    let minDiff = Infinity;
+
+    dates.forEach((date, index) => {
+      const dateTime = dayjs(date).tz('America/New_York').valueOf();
+      const diff = Math.abs(dateTime - targetTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nearestIndex = index;
+      }
+    });
+
+    return nearestIndex;
   };
 
   const handleBatchUpload = (ticker, chartData) => {
@@ -122,7 +139,7 @@ function UploadForm() {
                 <React.Fragment key={index}>
                   <TableRow onClick={() => toggleRow(index)} style={{ cursor: 'pointer' }}>
                     <TableCell component="th" scope="row">{result.ticker || 'N/A'}</TableCell>
-                    <TableCell>{result.created_at || 'Unknown Date'}</TableCell>
+                    <TableCell>{dayjs(result.created_at).tz('America/New_York').format('YYYY-MM-DD hh:mm A') || 'Unknown Date'}</TableCell>
                     <TableCell>{result.total_return ? `${result.total_return.toFixed(2)}%` : 'N/A'}</TableCell>
                     <TableCell>
                       <Button>

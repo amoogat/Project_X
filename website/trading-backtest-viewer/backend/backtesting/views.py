@@ -179,7 +179,7 @@ class StockDataView(APIView):
         logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [(data.date - timedelta(hours=4)).strftime('%Y-%m-%d %I:%M:%S %p') for data in stock_data]
+        dates = [(data.date) for data in stock_data]
         prices = [float(data.close) for data in stock_data]
 
         response_data = {
@@ -203,12 +203,12 @@ def batch_upload(request):
             def save_batch(batch):
                 with transaction.atomic():
                     for entry in batch:
-                        date = entry.get('date')
+                        date = (entry.get('date'))
                         if isinstance(date, str):
                             date = datetime.fromisoformat(date)
                         if not date.tzinfo:
                             date = pytz.UTC.localize(date)
-                        
+                        date = (date - timedelta(hours=4)).strftime('%Y-%m-%d %I:%M:%S %p')
                         StockData.objects.update_or_create(
                             ticker=ticker,
                             date=date,
