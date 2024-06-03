@@ -34,6 +34,7 @@ class GPTTwitter:
         self.tweets = self.get_tweets()
         self.df = pd.DataFrame(self.tweets.data)
         self.heisenberg_tweets = None
+        self.ht_dynamic = []  # Define ht_dynamic as a class attribute
 
     def get_user_id(self):
         try:
@@ -86,47 +87,47 @@ class GPTTwitter:
         return driver
 
     def get_jpg_url(driver, link):
-    max_attempts = 10
-    initial_wait = 0.5
-    max_wait = 10
-    for attempt in range(max_attempts):
-        url = None
-        try:
-            if isinstance(link, list):  # Extract first element if URL is a list
-                for u in link:
-                    if "twitter" in u:
-                        url = u
-                        break
-            elif not link:
-                print("No Link Provided")
-                return None
-            else:
-                url = link
-            if not url:
-                return None
-            url = f'https://{url}'
-            print(f"Attempting to access URL: {url}")
-            driver.get(url)
-            # Wait for potential redirects and the page to stabilize
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-            time.sleep(1)  # Extended sleep to ensure the page is loaded
-            images = driver.find_elements(By.TAG_NAME, "img")
-            for img in images:
-                img_src = img.get_attribute('src')
-                if 'media' in img_src:
-                    print("img_src: " + img_src)
-                    return img_src
+        max_attempts = 10
+        initial_wait = 0.5
+        max_wait = 10
+        for attempt in range(max_attempts):
+            url = None
+            try:
+                if isinstance(link, list):  # Extract first element if URL is a list
+                    for u in link:
+                        if "twitter" in u:
+                            url = u
+                            break
+                elif not link:
+                    print("No Link Provided")
+                    return None
+                else:
+                    url = link
+                if not url:
+                    return None
+                url = f'https://{url}'
+                print(f"Attempting to access URL: {url}")
+                driver.get(url)
+                # Wait for potential redirects and the page to stabilize
+                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+                time.sleep(1)  # Extended sleep to ensure the page is loaded
+                images = driver.find_elements(By.TAG_NAME, "img")
+                for img in images:
+                    img_src = img.get_attribute('src')
+                    if 'media' in img_src:
+                        print("img_src: " + img_src)
+                        return img_src
 
-            print("No media images found on the page")
-            return None
-        except Exception as e:
-            print(f"General error processing URL {url}: {e}")
-        wait_time = initial_wait * (2 ** attempt) + random.uniform(0, 1)
-        wait_time = min(wait_time, max_wait)
-        print(f"Retrying in {wait_time:.2f} seconds...")
-        time.sleep(wait_time)
-    print("Maximum attempts reached, aborting")
-    return None
+                print("No media images found on the page")
+                return None
+            except Exception as e:
+                print(f"General error processing URL {url}: {e}")
+            wait_time = initial_wait * (2 ** attempt) + random.uniform(0, 1)
+            wait_time = min(wait_time, max_wait)
+            print(f"Retrying in {wait_time:.2f} seconds...")
+            time.sleep(wait_time)
+        print("Maximum attempts reached, aborting")
+        return None
 
 
     def get_response_image(self, text):
@@ -183,7 +184,7 @@ class GPTTwitter:
 
     def save_to_excel(self, filename='ht_unprocessed.xlsx'):
         self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_localize(None)
-        self.heisenberg_tweets = self.heisenberg_tweets.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        self.heisenberg_tweets = self.heisenberg_tweets.applymap(lambda x: x.encode('utf-8') if isinstance(x, str) else x)
         cwd = os.getcwd()
         file_path = os.path.join(cwd, filename)
         print(file_path)
@@ -191,16 +192,16 @@ class GPTTwitter:
 
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt, filename='out.xlsx'):
         cols = ['id', 'created_at', 'full_response']
-        ht_dynamic = self.heisenberg_tweets[cols]
-        ht_dynamic['result'] = ht_dynamic['full_response'].apply(
+        heisenberg_tweets = self.heisenberg_tweets[cols]
+        heisenberg_tweets['result'] = heisenberg_tweets['full_response'].apply(
             lambda text: self.dynamic_prompting(text, sys_prompt, user_prompt)
         )
-        ht_dynamic['created_at'] = pd.to_datetime(ht_dynamic['created_at']).dt.tz_localize(None)
-        ht_dynamic = ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+        heisenberg_tweets['created_at'] = pd.to_datetime(heisenberg_tweets['created_at']).dt.tz_localize(None)
+        heisenberg_tweets = heisenberg_tweets.applymap(lambda x: x.encode('utf-8') if isinstance(x, str) else x)
         cwd = os.getcwd()
         file_path = os.path.join(cwd, filename)
         print(file_path)
-        ht_dynamic.to_excel(file_path, index=False)
+        heisenberg_tweets.to_excel(file_path, index=False)
 
 # Usage example:
 #username = "Heisenberg_100k"
