@@ -20,6 +20,26 @@ function UploadForm() {
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
+  const calculateMarketMinutes = (start, minutesTaken) => {
+    let totalMinutes = 0;
+    let currentTime = dayjs(start).tz('America/New_York');
+    
+    while (totalMinutes < minutesTaken) {
+      if (currentTime.hour() >= 9 && currentTime.hour() < 16 && currentTime.day() >= 1 && currentTime.day() <= 5) {
+        totalMinutes++;
+      }
+      currentTime = currentTime.add(1, 'minute');
+    }
+    
+    return currentTime;
+  };
+  
+  const findSaleIndex = (dates, createdAt, minutesTaken) => {
+    const startDateTime = dayjs(createdAt).tz('America/New_York');
+    const endDateTime = calculateMarketMinutes(startDateTime, minutesTaken);
+    return findNearestIndex(dates, endDateTime.format('YYYY-MM-DD HH:mm:ss'));
+  };
+
   const handleUpload = () => {
     if (!username) {
       setMessage('Please provide a username.');
@@ -35,7 +55,7 @@ function UploadForm() {
             .then(chartResponse => {
               result.chartData = chartResponse.data.chartData;
               result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
-              result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
+              result.saleIndex = findSaleIndex(chartResponse.data.chartData.dates, result.created_at, result.minutes_taken);
               setResults(prevResults => [...prevResults, result]);
               if (chartResponse.data.chartData) {
                 handleBatchUpload(result.ticker, chartResponse.data.chartData);
@@ -54,13 +74,13 @@ function UploadForm() {
 
   const findNearestIndex = (dates, targetDate) => {
     const targetTime = dayjs(targetDate).tz('America/New_York').valueOf();
-    let nearestIndex = -1;
+    let nearestIndex = 0;
     let minDiff = Infinity;
 
     dates.forEach((date, index) => {
       const dateTime = dayjs(date).tz('America/New_York').valueOf();
-      const diff = dateTime - targetTime;
-      if (diff >= 0 && diff < minDiff) {
+      const diff = Math.abs(dateTime - targetTime);
+      if (diff < minDiff) {
         minDiff = diff;
         nearestIndex = index;
       }
@@ -106,7 +126,7 @@ function UploadForm() {
   return (
     <Box sx={{ p: 2 }}>
       <Typography variant="h5" component="h2" style={{ paddingBottom: '16px' }}>
-        Process Twitter Username
+        Process Heisenberg_100k
       </Typography>
       <TextField
         label="Twitter Username"

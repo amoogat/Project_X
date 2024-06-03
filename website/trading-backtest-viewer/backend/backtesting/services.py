@@ -80,6 +80,7 @@ class MarketEnvironment:
                 if data.empty:
                     continue
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
+                data = data[(data.index <= end_date_utc)]
                 self.save_stock_data(ticker, data)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']

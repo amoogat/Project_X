@@ -164,7 +164,10 @@ def upload_file(request):
             else:
                 logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
-
+        try:
+            twitter_processor.close_drivers()
+        except Exception as e:
+            logging.error(str(e))
         return Response({'status': 'success', 'data': results_list}, status=201)
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
