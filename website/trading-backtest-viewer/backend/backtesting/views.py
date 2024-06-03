@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor
 
-debug_mode = False
+debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):

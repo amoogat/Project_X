@@ -22,7 +22,7 @@ if config_path not in sys.path:
     sys.path.append(config_path)
 import big_baller_moves
 
-debug_mode = False
+debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MarketEnvironment:
