@@ -19,6 +19,7 @@ debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
+    message = message.decode('utf-8')
     if message:
         try:
             # Basic validation to check if the message format is as expected
@@ -37,6 +38,7 @@ def return_stock(message):
 
 
 def return_open_close(message):
+    message = message.decode('utf-8')
     if not message:
         return 0
     cleaned_message = message.replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','')
@@ -120,10 +122,10 @@ def upload_file(request):
         Corect Output: [FXI Open Long]
         """
         user_prompt = "Is this tweet referring to the opening or closing of a stock position? If it is, please also list the corresponding ticker and whether it is long or short. If it is not referring to the opening or closing of a position, simply put neither. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
-        
+        ht_dynamic = []
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
         
-        df = twitter_processor.ht_dynamic.copy()
+        df = twitter_processor.heisenberg_tweets.copy()
         df['ticker'] = df['result'].apply(return_stock)
         df['buy'] = df['result'].apply(return_open_close)
         df = df.loc[(df['ticker'].notnull()) & (df['buy'] == 1)]
@@ -153,7 +155,6 @@ def upload_file(request):
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
                 'successful_trades': result.get('successful_trades', 0),
                 'minutes_taken': result.get('minutes_taken', 0),
-                'sold_at_date' : result.get('sold_at_date'),
                 'score': result.get('score', 0.0)
             }
 

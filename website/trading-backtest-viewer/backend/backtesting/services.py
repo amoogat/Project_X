@@ -204,6 +204,7 @@ def parallel_optimize_strategy(df, param_ranges):
     return pd.DataFrame(results)
 
 class GPTTwitter:
+    ht_dynamic = []
     def __init__(self, username):
         self.username = username
         self.client = tweepy.Client(bearer_token=big_baller_moves.bossman_tingz["twitter_api_key"])
@@ -224,7 +225,7 @@ class GPTTwitter:
         self.df = pd.DataFrame(self.tweets.data)
         self.df["text"] = [(str(i).replace(",", "").replace('$', '').replace('\\', '').replace('*','')) for i in self.df["text"]]
         self.heisenberg_tweets = pd.DataFrame()
-        self.ht_dynamic = pd.DataFrame()
+        self.heisenberg_tweets = pd.DataFrame()
         self.drivers = []
         
     def get_user_id(self):
@@ -351,6 +352,7 @@ class GPTTwitter:
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
     def get_jpg_url(self, driver, link):
+        self.ht_dynamic = []
         max_attempts, wait_time = 2, 0.5
         for attempt in range(max_attempts):
             try:
@@ -411,13 +413,15 @@ class GPTTwitter:
         return results
     
     def process_tweets(self):
+        self.ht_dynamic = []
         if not self.df.empty:
             self.initialize_webdrivers()
             self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
             selected_columns = ['id', 'text', 'created_at', 'image_url']
             self.heisenberg_tweets = self.df[selected_columns].copy()
             self.heisenberg_tweets['image_response'] = None  # Initialize the column to avoid key errors
-
+            self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_convert('America/New_York')
+            
             urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
             if urls_to_fetch:
                 logging.info(f"Fetching images for {str(len(urls_to_fetch))} URLs.")
@@ -440,14 +444,14 @@ class GPTTwitter:
             if debug_mode:
                 for i, row in self.heisenberg_tweets.iterrows():
                     logging.info('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']) + '\n==============')
-            self.ht_dynamic = self.heisenberg_tweets.copy()
+            self.heisenberg_tweets = self.heisenberg_tweets.copy()
         else:
             logging.error("No data to process. DataFrame is empty.")
                     
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
-        if self.ht_dynamic is not None and not self.ht_dynamic.empty:
+        if self.heisenberg_tweets is not None and not self.heisenberg_tweets.empty:
             async def fetch_and_process_all():
-                tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.ht_dynamic.iterrows()]
+                tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.heisenberg_tweets.iterrows()]
                 responses = await asyncio.gather(*tasks)
                 return responses
 
@@ -455,12 +459,12 @@ class GPTTwitter:
             responses = asyncio.run(fetch_and_process_all())
 
             # Check if 'result' column can be added or if it already exists
-            if 'result' in self.ht_dynamic.columns:
-                self.ht_dynamic['result'] = responses
+            if 'result' in self.heisenberg_tweets.columns:
+                self.heisenberg_tweets['result'] = responses
             else:
-                self.ht_dynamic = self.ht_dynamic.assign(result=responses)
+                self.heisenberg_tweets = self.heisenberg_tweets.assign(result=responses)
                 
-            self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
-            self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
+            self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_localize(None)
+            self.heisenberg_tweets = self.heisenberg_tweets.applymap(lambda x: x.encode('utf-8') if isinstance(x, str) else x)
         else:
-            logging.error("ht_dynamic DataFrame is empty or not initialized.")
+            logging.error("heisenberg_tweets DataFrame is empty or not initialized.")
