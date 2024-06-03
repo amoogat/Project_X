@@ -20,26 +20,6 @@ function UploadForm() {
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
-  const calculateMarketMinutes = (start, minutesTaken) => {
-    let totalMinutes = 0;
-    let currentTime = dayjs(start).tz('America/New_York');
-    
-    while (totalMinutes < minutesTaken) {
-      if (currentTime.hour() >= 9 && currentTime.hour() < 16 && currentTime.day() >= 1 && currentTime.day() <= 5) {
-        totalMinutes++;
-      }
-      currentTime = currentTime.add(1, 'minute');
-    }
-    
-    return currentTime;
-  };
-  
-  const findSaleIndex = (dates, createdAt, minutesTaken) => {
-    const startDateTime = dayjs(createdAt).tz('America/New_York');
-    const endDateTime = calculateMarketMinutes(startDateTime, minutesTaken);
-    return findNearestIndex(dates, endDateTime.format('YYYY-MM-DD HH:mm:ss'));
-  };
-
   const handleUpload = () => {
     if (!username) {
       setMessage('Please provide a username.');
@@ -55,7 +35,7 @@ function UploadForm() {
             .then(chartResponse => {
               result.chartData = chartResponse.data.chartData;
               result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
-              result.saleIndex = findSaleIndex(chartResponse.data.chartData.dates, result.created_at, result.minutes_taken);
+              result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
               setResults(prevResults => [...prevResults, result]);
               if (chartResponse.data.chartData) {
                 handleBatchUpload(result.ticker, chartResponse.data.chartData);
@@ -126,7 +106,7 @@ function UploadForm() {
   return (
     <Box sx={{ p: 2 }}>
       <Typography variant="h5" component="h2" style={{ paddingBottom: '16px' }}>
-        Process Heisenberg_100k
+        Process Twitter Username
       </Typography>
       <TextField
         label="Twitter Username"
