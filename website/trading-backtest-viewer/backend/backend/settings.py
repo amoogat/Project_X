@@ -15,17 +15,17 @@ import sys
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../..'))
-
+ASGI_APPLICATION = 'myproject.asgi.application'
 # Add the config path to sys.path
 if config_path not in sys.path:
     sys.path.append(config_path)
-import configur
+import big_baller_moves
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/2.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = configur.thepass['key']
+SECRET_KEY = big_baller_moves.bossman_tingz['key']
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -45,16 +45,18 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
+    'rest_framework',
     'backend', 
     'backtesting.apps.BacktestingConfig',
     'trading_analysis.apps.TradingAnalysisConfig',
     'user_interaction.apps.UserInteractionConfig',
-    'rest_framework',
 ]
 
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 MEDIA_URL = '/media/'
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -62,6 +64,31 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",  # Your React app URL
+]
+
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
+
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -92,9 +119,9 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'project_x_db',       # The name of the database you created
-        'USER': str(configur.thepass['webuser']),       # The username you created
-        'PASSWORD': str(configur.thepass['webpass']), # The password for the database user
+        'NAME': 'px_db',       # The name of the database you created
+        'USER': str(big_baller_moves.bossman_tingz['webuser']),       # The username you created
+        'PASSWORD': str(big_baller_moves.bossman_tingz['webpass']), # The password for the database user
         'HOST': 'localhost',         # Set to empty string for localhost
         'PORT': '5432',                 # Set to empty string for default
     }
@@ -122,11 +149,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.BasicAuthentication',
+        'rest_framework.permissions.AllowAny',
     ],
 }
 

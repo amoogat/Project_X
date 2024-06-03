@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Upload Username</title>
+    <script>
+        window.csrfToken = '{{ csrf_token }}';
+    </script>
+</head>
+<body>
+    <h1>Upload Twitter Username</h1>
+    <form method="post" action="/api/upload/">
+        {% csrf_token %}
+        <label for="username">Twitter Username:</label>
+        <input type="text" id="username" name="username" required>
+        <button type="submit">Upload</button>
+    </form>
+</body>
+</html>
