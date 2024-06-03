@@ -35,8 +35,8 @@ function UploadForm() {
             .then(chartResponse => {
               result.chartData = chartResponse.data.chartData;
               result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
+              result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
               setResults(prevResults => [...prevResults, result]);
-              // Call handleBatchUpload for each result
               if (chartResponse.data.chartData) {
                 handleBatchUpload(result.ticker, chartResponse.data.chartData);
               }
@@ -54,13 +54,13 @@ function UploadForm() {
 
   const findNearestIndex = (dates, targetDate) => {
     const targetTime = dayjs(targetDate).tz('America/New_York').valueOf();
-    let nearestIndex = 0;
+    let nearestIndex = -1;
     let minDiff = Infinity;
 
     dates.forEach((date, index) => {
       const dateTime = dayjs(date).tz('America/New_York').valueOf();
-      const diff = Math.abs(dateTime - targetTime);
-      if (diff < minDiff) {
+      const diff = dateTime - targetTime;
+      if (diff >= 0 && diff < minDiff) {
         minDiff = diff;
         nearestIndex = index;
       }
@@ -130,6 +130,7 @@ function UploadForm() {
               <TableRow>
                 <TableCell>Ticker</TableCell>
                 <TableCell>Created At</TableCell>
+                <TableCell>Minutes Taken</TableCell>
                 <TableCell>Total Return</TableCell>
                 <TableCell>Actions</TableCell>
               </TableRow>
@@ -140,6 +141,7 @@ function UploadForm() {
                   <TableRow onClick={() => toggleRow(index)} style={{ cursor: 'pointer' }}>
                     <TableCell component="th" scope="row">{result.ticker || 'N/A'}</TableCell>
                     <TableCell>{dayjs(result.created_at).tz('America/New_York').format('MM-DD hh:mm A') || 'Unknown Date'}</TableCell>
+                    <TableCell>{result.minutes_taken || 'N/A'}</TableCell>
                     <TableCell>{result.total_return ? `${result.total_return.toFixed(2)}%` : 'N/A'}</TableCell>
                     <TableCell>
                       <Button>
@@ -148,7 +150,7 @@ function UploadForm() {
                     </TableCell>
                   </TableRow>
                   <TableRow>
-                    <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={4}>
+                    <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={5}>
                       <Collapse in={openRow === index} timeout="auto" unmountOnExit>
                         <Box sx={{ margin: 1 }}>
                           <Typography variant="h6" gutterBottom component="div">
@@ -175,6 +177,19 @@ function UploadForm() {
                                     backgroundColor: 'rgba(255, 99, 132, 0.5)',
                                     pointRadius: result.chartData.dates.map((date, i) =>
                                       i === result.createdAtIndex ? 7 : 0
+                                    ),
+                                    showLine: false,
+                                    order: 1,  // Ensure this dataset is drawn above
+                                  },
+                                  {
+                                    label: 'Sale Point',
+                                    data: result.chartData.dates.map((date, i) =>
+                                      i === result.saleIndex ? result.chartData.prices[i] : null
+                                    ),
+                                    borderColor: 'rgb(0, 255, 0)',
+                                    backgroundColor: 'rgba(0, 255, 0, 0.5)',
+                                    pointRadius: result.chartData.dates.map((date, i) =>
+                                      i === result.saleIndex ? 7 : 0
                                     ),
                                     showLine: false,
                                     order: 1,  // Ensure this dataset is drawn above

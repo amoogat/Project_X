@@ -109,9 +109,10 @@ class Backtester:
     def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, trailing_stop_multiplier, atr_period):
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
         profit_losses = ((data_for_backtest['Close'] - callout_price) / callout_price * 100).tolist()
-        return self.evaluate_trades(profit_losses, atr, trailing_stop_multiplier)
+        dates = data_for_backtest.index.tolist()
+        return self.evaluate_trades(profit_losses, atr, trailing_stop_multiplier, dates)
 
-    def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier):
+    def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier,dates):
         portfolio = {
             'Capital': self.initial_capital,
             'Cash': self.initial_capital,
@@ -125,7 +126,9 @@ class Backtester:
         portfolio['Equity'] = initial_investment
         max_profit_loss = 0
         minutes_taken = 0
-        for i, profit_loss in enumerate(profit_losses):
+        sold_at_date = None
+        
+        for i, (profit_loss, date) in enumerate(zip(profit_losses,dates)):
             if profit_loss > max_profit_loss:
                 max_profit_loss = profit_loss
             if profit_loss < max_profit_loss - (atr * trailing_stop_multiplier) or i == len(profit_losses) - 1:
@@ -136,6 +139,7 @@ class Backtester:
                 portfolio['Equity'] -= sell_amount
                 portfolio['Returns'].append(profit_loss / 100)
                 minutes_taken = i
+                sold_at_date = date
                 if profit_loss > 1 and drawdown < 0.005:
                     portfolio['Successful Trades'] += 1
                 break
@@ -152,7 +156,8 @@ class Backtester:
             'Maximum Drawdown': max_drawdown,
             'Average Trade Gain': avg_trade_gain,
             'Successful Trades': portfolio['Successful Trades'],
-            'Minutes Taken': minutes_taken
+            'Minutes Taken': minutes_taken,
+            'Sold At Date':sold_at_date
         }
 
 def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callout_price, param_ranges, backtester):
@@ -173,6 +178,7 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
                 'maximum_drawdown': result['Maximum Drawdown'],
                 'successful_trades': result['Successful Trades'],
                 'minutes_taken': result['Minutes Taken'],
+                'sold_at_date' : result['Sold At Date'],
                 'score': (result['Total Return'] - result['Maximum Drawdown']) / (result['Minutes Taken'] + 0.0001) * 6000
             })
 

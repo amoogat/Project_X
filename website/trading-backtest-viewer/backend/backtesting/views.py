@@ -153,6 +153,7 @@ def upload_file(request):
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
                 'successful_trades': result.get('successful_trades', 0),
                 'minutes_taken': result.get('minutes_taken', 0),
+                'sold_at_date' : result.get('sold_at_date'),
                 'score': result.get('score', 0.0)
             }
 
