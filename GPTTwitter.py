@@ -56,26 +56,6 @@ class GPTTwitter:
             expansions=['attachments.media_keys', 'author_id']
         )
 
-    def get_tweets_extended(self)
-        paginator = tweepy.Paginator(
-        client1.get_users_tweets,               
-        user_id,                                   
-        exclude=['retweets', 'replies'],     
-        max_results=100, 
-        tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  
-        media_fields=['preview_image_url', 'url'],
-        expansions=['attachments.media_keys', 'author_id'],
-        limit=2 # increase this for more batches     
-        
-        listy = []
-        
-        for page in paginator:
-            listy.extend(page.data)
-
-        df = pd.DataFrame(listy)
-    )
-
-
     def get_display_url(self, entities):
         if isinstance(entities, dict) and "urls" in entities:
             urls = entities["urls"]
@@ -107,65 +87,49 @@ class GPTTwitter:
         return driver
 
     def get_jpg_url(driver, link):
-    max_attempts = 10
-    initial_wait = 0.5
-    max_wait = 10
-    for attempt in range(max_attempts):
-        url = None
-        try:
-            if isinstance(link, list):  # Extract first element if URL is a list
-                for u in link:
-                    if "twitter" in u:
-                        url = u
-                        break
-            elif not link:
-                print("No Link Provided")
+        max_attempts = 10
+        initial_wait = 0.5
+        max_wait = 10
+        for attempt in range(max_attempts):
+            url = None
+            try:
+                if isinstance(link, list):  # Extract first element if URL is a list
+                    for u in link:
+                        if "twitter" in u:
+                            url = u
+                            break
+                elif not link:
+                    print("No Link Provided")
+                    return None
+                else:
+                    url = link
+                if not url:
+                    return None
+                url = f'https://{url}'
+                print(f"Attempting to access URL: {url}")
+                driver.get(url)
+                # Wait for potential redirects and the page to stabilize
+                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+                time.sleep(1)  # Extended sleep to ensure the page is loaded
+                images = driver.find_elements(By.TAG_NAME, "img")
+                for img in images:
+                    img_src = img.get_attribute('src')
+                    if 'media' in img_src:
+                        print("img_src: " + img_src)
+                        return img_src
+
+                print("No media images found on the page")
                 return None
-            else:
-                url = link
-            if not url:
-                return None
-            url = f'https://{url}'
-            print(f"Attempting to access URL: {url}")
-            driver.get(url)
-            # Wait for potential redirects and the page to stabilize
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-            time.sleep(1)  # Extended sleep to ensure the page is loaded
-            images = driver.find_elements(By.TAG_NAME, "img")
-            for img in images:
-                img_src = img.get_attribute('src')
-                if 'media' in img_src:
-                    print("img_src: " + img_src)
-                    return img_src
+            except Exception as e:
+                print(f"General error processing URL {url}: {e}")
+            wait_time = initial_wait * (2 ** attempt) + random.uniform(0, 1)
+            wait_time = min(wait_time, max_wait)
+            print(f"Retrying in {wait_time:.2f} seconds...")
+            time.sleep(wait_time)
+        print("Maximum attempts reached, aborting")
+        return None
 
-            print("No media images found on the page")
-            return None
-        except Exception as e:
-            print(f"General error processing URL {url}: {e}")
-        wait_time = initial_wait * (2 ** attempt) + random.uniform(0, 1)
-        wait_time = min(wait_time, max_wait)
-        print(f"Retrying in {wait_time:.2f} seconds...")
-        time.sleep(wait_time)
-    print("Maximum attempts reached, aborting")
-    return None
 
-    def convert_image_to_jpg(self)
-    driver = initialize_webdriver()
-    for i in range(len(heisenberg_tweets)):
-        try:
-            heisenberg_tweets.loc[i, 'jpg_url'] = get_jpg_url(driver, heisenberg_tweets.loc[i, 'image_url'])
-            if i % 80 == 0 and i != 0:
-                driver.quit()
-                print("sleepy time")
-                time.sleep(90)
-                driver = initialize_webdriver()
-            if i > 0 :
-                driver.close()
-        except Exception as e:
-            print(f"Error processing row {i}: {e}")
-
-driver.quit()
-    
     def get_response_image(self, text):
         if text == 0:
             return "No image available"
@@ -212,7 +176,7 @@ driver.quit()
             self.driver.quit()
 
         self.heisenberg_tweets['contains_image_url'] = self.heisenberg_tweets.apply['image_url'].apply(lambda x: self.contains_twitter_pic(x) if x != None else False)
-        self.heisenberg_tweets = self.heisenberg_tweets[self.heisenberg_tweets['contains_image_url'] & self.heisenberg_tweets['jpg_url'].notna()]
+        self.heisenberg_tweets = heisenberg_tweets[heisenberg_tweets['contains_image_url'] & heisenberg_tweets['jpg_url'].notna()]
         self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['jpg_url'].apply(lambda x: self.get_response_image(x) if x != None else None)
         self.heisenberg_tweets['image_response'] = self.heisenberg_tweets['image_response'].apply(lambda x: x.replace('$', '\$') if x and pd.notna(x) else x)
         self.heisenberg_tweets['text'] = self.heisenberg_tweets['text'].apply(lambda x: x.replace('$', '\$') if pd.notna(x) else x)
