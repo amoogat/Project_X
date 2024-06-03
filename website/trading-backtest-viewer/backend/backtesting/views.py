@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor
 
-debug_mode = False
+debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
@@ -153,6 +153,7 @@ def upload_file(request):
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
                 'successful_trades': result.get('successful_trades', 0),
                 'minutes_taken': result.get('minutes_taken', 0),
+                'sold_at_date' : result.get('sold_at_date'),
                 'score': result.get('score', 0.0)
             }
 

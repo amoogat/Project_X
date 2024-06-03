@@ -34,6 +34,7 @@ class BacktestResult(models.Model):
     maximum_drawdown = models.FloatField(default=0.0)
     successful_trades = models.IntegerField(default=0)
     minutes_taken = models.IntegerField(default=0)
+    sold_at_date = models.DateTimeField(default=datetime.now(),blank=True)
     score = models.FloatField(default=0.0)
 
     def __str__(self):
