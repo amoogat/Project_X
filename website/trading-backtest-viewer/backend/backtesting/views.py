@@ -1,16 +1,22 @@
-from django.shortcuts import render
+from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-import logging
+import logging, pytz, json
 import pandas as pd
 import numpy as np
-from .models import BacktestResult, get_default_strategy
+from .models import BacktestResult, get_default_strategy, StockData
 from .services import parallel_optimize_strategy, GPTTwitter 
 from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
+from django.shortcuts import render, redirect
+from django.http import JsonResponse
+from django.db import transaction
+from datetime import datetime, timedelta
+from django.utils.decorators import method_decorator
+from concurrent.futures import ThreadPoolExecutor
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+debug_mode = False
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
     if message:
@@ -22,6 +28,8 @@ def return_stock(message):
                 stock = parts[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
                 # Further validation to check if the cleaned stock symbol is alphanumeric
                 if stock.isalnum():
+                    if stock.upper() in ['VIX','VVIX']:
+                        stock = 'UVXY'
                     return stock
         except Exception as e:
             logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
@@ -42,12 +50,20 @@ def upload_file(request):
         username = request.data.get('username')
         if not username:
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
+        
+        if not debug_mode:
+            # Check if the username already has data in the database
+            existing_results = BacktestResult.objects.filter(username=username).distinct('ticker', 'created_at')
+            if existing_results.exists():
+                # Serialize and return the existing results
+                serializer = BacktestResultSerializer(existing_results, many=True)
+                return Response({'status': 'success', 'data': serializer.data}, status=200)
 
         twitter_processor = GPTTwitter(username)
         try:
             twitter_processor.process_tweets()
         except Exception as e:
-            print(e)
+            logging.error(str(e))
         finally:
             twitter_processor.close_drivers()
 
@@ -59,6 +75,7 @@ def upload_file(request):
             'trailing_stop_loss_multiplier': np.arange(1, 3.5, 0.5),
             'atr_periods': [14, 50, 100, 200, 400, 650]
         }
+        
         sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output. If the text and image description Ticker differ, go with the text, unless there is no ticker mentioned in the text.
         Example:
         Text: $PARA Closed\n\nIn 13.11 (yesterday)\n\nOut 13.24\n\n+1%\n+$65 profit\n\nJust trying to reduce long exposure heading into tomorrow. 
@@ -68,7 +85,7 @@ def upload_file(request):
         It's a limit order set to sell at $13.24. The negative quantity (-500) indicates that shares are being sold rather than purchased.
         Correct Output: [Close PARA Long]
 
-        Text: If $META closes above 450, I will do 1,000 jumping jacks.\n\n🙏
+        Text: If $META closes above 450, I will do 1,000 jumping jacks.\n\n
         TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
 
@@ -122,6 +139,7 @@ def upload_file(request):
 
         for result in results_list:
             result_data = {
+                'username': username, 
                 'strategy': default_strategy_id,
                 'ticker': result.get('ticker', ''),
                 'created_at': result.get('created_at'),
@@ -142,7 +160,7 @@ def upload_file(request):
             if serializer.is_valid():
                 serializer.save()
             else:
-                logging.error(f"Serializer error: {serializer.errors}")
+                logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
 
         return Response({'status': 'success', 'data': results_list}, status=201)
@@ -155,5 +173,69 @@ def results_view(request):
     results = BacktestResult.objects.all()
     return render(request, 'results.html', {'results': results})
 
+@csrf_exempt  # Consider CSRF implications
 def upload_form_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        # Process the username, possibly calling an external API or service
+        return redirect('success_url')  # Redirect after POST
     return render(request, 'upload.html')
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class StockDataView(APIView):
+    def get(self, request, ticker):
+        if debug_mode:
+            logging.info(f"Received request for ticker: {ticker}")
+
+        stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
+        dates = [(data.date) for data in stock_data]
+        prices = [float(data.close) for data in stock_data]
+
+        response_data = {
+            'ticker': ticker,
+            'chartData': {
+                'dates': dates,
+                'prices': prices,
+            }
+        }
+
+        return JsonResponse(response_data)
+
+@csrf_exempt
+def batch_upload(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            ticker = data.get('ticker')
+            stock_data = data.get('stock_data')
+
+            def save_batch(batch):
+                with transaction.atomic():
+                    for entry in batch:
+                        date = (entry.get('date'))
+                        if isinstance(date, str):
+                            date = datetime.fromisoformat(date)
+                        if not date.tzinfo:
+                            date = pytz.UTC.localize(date)
+                        date = (date - timedelta(hours=4)).strftime('%m-%d %I:%M:%S %p')
+                        StockData.objects.update_or_create(
+                            ticker=ticker,
+                            date=date,
+                            defaults={
+                                'close': entry.get('close', 0.0)
+                            }
+                        )
+
+            BATCH_SIZE = 1000
+            batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                executor.map(save_batch, batches)
+
+            return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
+        except Exception as e:
+            logging.error(f"Failed to save batch stock data: {str(e)}")
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+    return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)

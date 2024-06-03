@@ -5,28 +5,24 @@ from datetime import datetime, timedelta
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import openai, random, os, tweepy, time, logging, itertools, pytz, sys
+import openai, os, tweepy, time, logging, itertools, pytz, sys
 from itertools import cycle
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
-from bs4 import BeautifulSoup
+from.models import StockData
 import httpx
 import asyncio
 from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
-
+from django.db import transaction
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
 if config_path not in sys.path:
     sys.path.append(config_path)
 import big_baller_moves
 
+debug_mode = False
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MarketEnvironment:
@@ -41,27 +37,50 @@ class MarketEnvironment:
             dt += self.us_bd
         if dt.hour < 9 or (dt.hour == 9 and dt.minute < 30):
             dt = dt.replace(hour=9, minute=30)
-        elif dt.hour > 16:
+        elif dt.hour >= 16:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
 
+    def save_stock_data(self, ticker, data):
+        try:
+            with transaction.atomic():
+                for index, row in data.iterrows():
+                    if isinstance(index, str):
+                        index = datetime.fromisoformat(index)
+                    if not index.tzinfo:
+                        index = pytz.UTC.localize(index)
+                    StockData.objects.update_or_create(
+                        ticker=ticker,
+                        date=index,
+                        defaults={
+                            'close': row['Close'],
+                        }
+                    )
+            if debug_mode:
+                logging.info(f"Successfully saved stock data for {ticker}")
+        except Exception as e:
+            logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
+            
+
     def fetch_market_data(self, ticker, signal_date):
-        if ticker in ['VIX','VVIX']:
-            ticker = 'UVXY'
+        if ticker in ['U','YINN']:
+            logging.error('Ticker is known to not be on RH so it wont work now.')
+            return None,None,None
+
         if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
-            signal_date = self.adjust_to_trading_hours(pytz.timezone('America/New_York').localize(signal_date))
-        else:
-            signal_date = self.adjust_to_trading_hours(signal_date.tz_convert(pytz.timezone('America/New_York')))
+            signal_date = pytz.timezone('America/New_York').localize(signal_date)
+        signal_date = self.adjust_to_trading_hours(signal_date)
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
-        attempts, wait = 5, 0.01
+        attempts, wait = 7, 0.1
         for attempt in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
                 if data.empty:
                     continue
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
+                self.save_stock_data(ticker, data)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']
                 data_for_atr = data.loc[:data.index[self.closest_time_index + 1]]
@@ -72,7 +91,7 @@ class MarketEnvironment:
                 wait *= 2
                 if wait > 5:
                     wait = 0.01
-        logging.error(f"Failed to download data for {ticker} after {attempts} attempts.")
+        logging.error(f"Failed to download data for {ticker} after {str(attempts)} attempts.")
         return None, None, None
 
     def calculate_atr(self, data, period):
@@ -126,7 +145,7 @@ class Backtester:
         max_drawdown = max(portfolio['Drawdowns']) if portfolio['Drawdowns'] else 0
         avg_trade_gain = np.mean(portfolio['Returns']) if portfolio['Returns'] else 0
         return {
-            'Total Return': total_return,
+            'Total Return': total_return*100,
             'Portfolio Variance': portfolio_variance,
             'Sharpe Ratio': sharpe_ratio,
             'Final Equity': portfolio['Cash'],
@@ -191,8 +210,8 @@ class GPTTwitter:
         self.api = tweepy.API(self.auth)
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
         self.node_urls = [
-            "http://192.168.10.7:5555/wd/hub",  # url for first chrome node
-            "http://192.168.10.7:5556/wd/hub"   # url for second chrome node
+            "http://localhost:5555/wd/hub",  # url for first chrome node
+            "http://localhost:5556/wd/hub"   # url for second chrome node
         ]
         self.user_id = self.get_user_id()
         self.tweets = self.get_tweets()
@@ -206,20 +225,20 @@ class GPTTwitter:
         try:
             user = self.client.get_user(username=self.username)
             user_id = user.data.id
-            print("User ID for", self.username, ":", user_id)
+            logging.info("User ID for " + self.username + ": " + str(user_id))
             return user_id
         except Exception as e:
-            print("Error:", e)
+            logging.error("Error:" + str(e))
             return None
 
     def get_tweets(self):
         return self.client.get_users_tweets(
-            id=self.user_id,
-            max_results=25,  # Number of tweets to retrieve (adjust as needed)
-            tweet_fields=['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields you want to retrieve for each tweet
-            media_fields=['preview_image_url', 'url'],
-            exclude=['retweets', 'replies'],
-            expansions=['attachments.media_keys', 'author_id']
+            id = self.user_id,
+            max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
+            tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields we  want to retrieve for each tweet
+            media_fields = ['preview_image_url', 'url'],
+            exclude = ['retweets', 'replies'],
+            expansions = ['attachments.media_keys', 'author_id']
         )
 
     def get_display_url(self, entities):
@@ -245,7 +264,7 @@ class GPTTwitter:
         capabilities = options.to_capabilities()
 
         driver = webdriver.Remote(
-            command_executor="http://192.168.10.7:4444/wd/hub",  # Replace with your hub URL
+            command_executor="http://localhost:4444/wd/hub",  # Replace with your hub URL
             desired_capabilities=capabilities
         )
         return driver
@@ -259,7 +278,7 @@ class GPTTwitter:
         if not text:
             return "No image available"
         if not isinstance(text, str):
-            print(f"Unexpected text format: {text}")
+            logging.error(f"Unexpected text format: {text}")
             text = text[0]
         
         url = "https://api.openai.com/v1/chat/completions"
@@ -284,7 +303,7 @@ class GPTTwitter:
             if response.status_code == 200:
                 return response.json()['choices'][0]['message']['content'].strip()
             else:
-                print(f"Failed to fetch data: {response.text}, Status Code: {response.status_code}")
+                logging.error(f"Failed to fetch data: {response.text}, Status Code: {str(response.status_code)}")
                 return None
 
 
@@ -307,13 +326,16 @@ class GPTTwitter:
                 }
             ]
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=payload)
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content'].strip()
-            else:
-                print(f"Failed to fetch data: {response.text}")
-                return None
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content'].strip()
+                else:
+                    logging.error(f"Failed to fetch data: {response.text}")
+                    return None
+            except httpx.RequestTimeout:
+                logging.error("Request timed out")
 
     async def fetch_image_responses(self,image_urls):
         tasks = [self.get_response_image(url) for url in image_urls if url]
@@ -323,12 +345,12 @@ class GPTTwitter:
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
     def get_jpg_url(self, driver, link):
-        max_attempts, wait_time = 4, 0.5
+        max_attempts, wait_time = 2, 0.5
         for attempt in range(max_attempts):
             try:
                 if isinstance(link, list):  # Extract first element if URL is a list
                     for u in link:
-                        if "twitter" in u and 'x.com' not in u:
+                        if "twitter" in u:
                             link = u
                             break
                 if not link:
@@ -346,10 +368,10 @@ class GPTTwitter:
                 logging.info("No media images found on the page")
             except (StaleElementReferenceException, WebDriverException) as e:
                 time.sleep(attempt + 0.5)  # Wait before retrying
-                logging.error(f"Attempt {attempt + 1}: Error with {url} - {str(e)}")
+                logging.error(f"Attempt {str(attempt + 1)}: Error with {url} - {str(e)}")
             except Exception as e:
                 if attempt == max_attempts - 1:
-                    logging.error(f"General error processing URL {url}: {e}")
+                    logging.error(f"General error processing URL {url}: {str(e)}")
         return None
     
     def initialize_webdrivers(self):
@@ -372,10 +394,11 @@ class GPTTwitter:
                 try:
                     result = future.result()
                     results[idx] = result  # Place result in the corresponding position
-                    if result:
-                        logging.info(f"Image found for link index {idx}: {result}")
-                    else:
-                        logging.info(f"No image found for link index {idx}.")
+                    if debug_mode:
+                        if result:
+                            logging.info(f"Image found for link index {str(idx)}: {result}")
+                        else:
+                            logging.info(f"No image found for link index {str(idx)}.")
                 except Exception as e:
                     logging.info(f"Error processing link at index {idx}: {str(e)}")
                     results[idx] = None  # Ensure failed results are marked as None
@@ -391,7 +414,7 @@ class GPTTwitter:
 
             urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
             if urls_to_fetch:
-                print(f"Fetching images for {len(urls_to_fetch)} URLs.")
+                logging.info(f"Fetching images for {str(len(urls_to_fetch))} URLs.")
                 image_urls = self.fetch_images_concurrently(urls_to_fetch)
                 for idx, img_url in enumerate(image_urls):
                     if img_url:
@@ -408,12 +431,12 @@ class GPTTwitter:
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
                 lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
             
-            for i, row in self.heisenberg_tweets.iterrows():
-                print('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']))
-                print('========================')
+            if debug_mode:
+                for i, row in self.heisenberg_tweets.iterrows():
+                    logging.info('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']) + '\n==============')
             self.ht_dynamic = self.heisenberg_tweets.copy()
         else:
-            print("No data to process. DataFrame is empty.")
+            logging.error("No data to process. DataFrame is empty.")
                     
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
         if self.ht_dynamic is not None and not self.ht_dynamic.empty:
@@ -434,5 +457,4 @@ class GPTTwitter:
             self.ht_dynamic['created_at'] = pd.to_datetime(self.ht_dynamic['created_at']).dt.tz_localize(None)
             self.ht_dynamic = self.ht_dynamic.applymap(lambda x: x.encode('unicode_escape').decode('utf-8') if isinstance(x, str) else x)
         else:
-            print("No data to process in ht_dynamic DataFrame.")
             logging.error("ht_dynamic DataFrame is empty or not initialized.")
