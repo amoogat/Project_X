@@ -193,7 +193,7 @@ class StockDataView(APIView):
             logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [(data.date) for data in stock_data]
+        dates = [data.date for data in stock_data]
         prices = [float(data.close) for data in stock_data]
 
         response_data = {
@@ -218,16 +218,21 @@ def parse_date(date_str):
 def save_batch(batch, ticker):
     try:
         bulk_list = []
+        existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
         for entry in batch:
             date = parse_date(entry.get('date'))
-            bulk_list.append(
-                StockData(
-                    ticker=ticker,
-                    date=date,
-                    close=entry.get('close', 0.0)
+            if date not in existing_dates:
+                bulk_list.append(
+                    StockData(
+                        ticker=ticker,
+                        date=date,
+                        close=entry.get('close', 0.0)
+                    )
                 )
-            )
-        StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
+        if bulk_list:
+            StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
+        else:
+            logging.info(str(ticker) + ' on ' + str(date) + ' has already been processed.')
         return True
     except Exception as e:
         logging.error(f"Failed to save batch stock data: {str(e)}")

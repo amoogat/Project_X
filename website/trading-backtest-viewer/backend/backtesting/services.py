@@ -40,27 +40,33 @@ class MarketEnvironment:
         elif dt.hour >= 16:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
-
+    
     def save_stock_data(self, ticker, data):
         try:
+            existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
             bulk_list = []
             for index, row in data.iterrows():
                 if isinstance(index, str):
                     index = datetime.fromisoformat(index)
                 if not index.tzinfo:
                     index = pytz.UTC.localize(index)
-                bulk_list.append(
-                    StockData(
-                        ticker=ticker,
-                        date=index,
-                        close=row['Close'],
+                if index not in existing_dates:
+                    bulk_list.append(
+                        StockData(
+                            ticker=ticker,
+                            date=index,
+                            close=row['Close'],
+                        )
                     )
-                )
-            StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)  # ignore_conflicts=True prevents errors on duplicates
+            if bulk_list:
+                StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)  # ignore_conflicts=True prevents errors on duplicates
+            else:
+                logging.info(str(ticker) + ' on ' + str(index) + ' has already been processed, skipping save..')
             if debug_mode:
                 logging.info(f"Successfully saved stock data for {ticker}")
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
+
 
     def fetch_market_data(self, ticker, signal_date):
         if ticker in ['U','YINN']:
