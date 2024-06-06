@@ -13,7 +13,7 @@ from django.http import JsonResponse
 from django.db import transaction
 from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -193,7 +193,7 @@ class StockDataView(APIView):
             logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [data.date for data in stock_data]
+        dates = [(data.date) for data in stock_data]
         prices = [float(data.close) for data in stock_data]
 
         response_data = {
@@ -215,6 +215,24 @@ def parse_date(date_str):
         date = pytz.UTC.localize(date)
     return date.astimezone(pytz.timezone('America/New_York'))
 
+def save_batch(batch, ticker):
+    try:
+        bulk_list = []
+        for entry in batch:
+            date = parse_date(entry.get('date'))
+            bulk_list.append(
+                StockData(
+                    ticker=ticker,
+                    date=date,
+                    close=entry.get('close', 0.0)
+                )
+            )
+        StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save batch stock data: {str(e)}")
+        return False
+
 @csrf_exempt
 def batch_upload(request):
     if request.method == 'POST':
@@ -226,22 +244,16 @@ def batch_upload(request):
             BATCH_SIZE = 1000  # Define the batch size
             batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
 
-            for batch in batches:
-                bulk_list = []
-                for entry in batch:
-                    date = parse_date(entry.get('date'))
-                    bulk_list.append(
-                        StockData(
-                            ticker=ticker,
-                            date=date,
-                            close=entry.get('close', 0.0)
-                        )
-                    )
-                StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
+            with ThreadPoolExecutor(max_workers=2) as executor:  
+                futures = [executor.submit(save_batch, batch, ticker) for batch in batches]
+                results = [future.result() for future in as_completed(futures)]
 
-            return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
+            if all(results):
+                return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
+            else:
+                return JsonResponse({'status': 'error', 'message': 'Some batches failed to upload'}, status=500)
         except Exception as e:
-            logging.error(f"Failed to save batch stock data: {str(e)}")
+            logging.error(f"Failed to process batch upload request: {str(e)}")
             return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)
