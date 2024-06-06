@@ -20,36 +20,34 @@ function UploadForm() {
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!username) {
       setMessage('Please provide a username.');
       return;
     }
     const data = { username };
-    API.post('upload/', data)
-      .then(response => {
-        setMessage('Processing successful');
-        const initialResults = response.data.data || [];
-        initialResults.forEach(result => {
-          API.get(`/api/stockdata/${result.ticker}/`)
-            .then(chartResponse => {
-              result.chartData = chartResponse.data.chartData;
-              result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
-              result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
-              setResults(prevResults => [...prevResults, result]);
-              if (chartResponse.data.chartData) {
-                handleBatchUpload(result.ticker, chartResponse.data.chartData);
-              }
-            })
-            .catch(error => {
-              console.error('Error fetching chart data:', error);
-            });
-        });
-      })
-      .catch(error => {
-        setMessage('Error processing username');
-        console.error('Upload error:', error);
-      });
+    try {
+      const response = await API.post('upload/', data);
+      setMessage('Processing successful');
+      const initialResults = response.data.data || [];
+      await Promise.all(initialResults.map(async result => {
+        try {
+          const chartResponse = await API.get(`/api/stockdata/${result.ticker}/`);
+          result.chartData = chartResponse.data.chartData;
+          result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
+          result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
+          setResults(prevResults => [...prevResults, result]);
+          if (chartResponse.data.chartData) {
+            await handleBatchUpload(result.ticker, chartResponse.data.chartData);
+          }
+        } catch (error) {
+          console.error('Error fetching chart data:', error);
+        }
+      }));
+    } catch (error) {
+      setMessage('Error processing username');
+      console.error('Upload error:', error);
+    }
   };
 
   const findNearestIndex = (dates, targetDate) => {
@@ -69,7 +67,7 @@ function UploadForm() {
     return nearestIndex;
   };
 
-  const handleBatchUpload = (ticker, chartData) => {
+  const handleBatchUpload = async (ticker, chartData) => {
     const stockData = chartData.dates.map((date, index) => ({
       date: date,
       close: chartData.prices[index],
@@ -81,22 +79,21 @@ function UploadForm() {
       batches.push(batch);
     }
   
-    Promise.all(batches.map(batch => 
-      fetch('/api/batch-upload/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': window.csrfToken // Include the CSRF token in the headers
-        },
-        body: JSON.stringify({ ticker, stock_data: batch })
-      })
-    ))
-    .then(() => {
+    try {
+      await Promise.all(batches.map(batch => 
+        fetch('/api/batch-upload/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': window.csrfToken // Include the CSRF token in the headers
+          },
+          body: JSON.stringify({ ticker, stock_data: batch })
+        })
+      ));
       console.log('All batches uploaded successfully');
-    })
-    .catch(error => {
+    } catch (error) {
       console.error('Error uploading batches:', error);
-    });
+    }
   };
 
   const toggleRow = (index) => {
