@@ -186,7 +186,6 @@ def upload_form_view(request):
         return redirect('success_url')  # Redirect after POST
     return render(request, 'upload.html')
 
-
 @method_decorator(csrf_exempt, name='dispatch')
 class StockDataView(APIView):
     def get(self, request, ticker):
@@ -194,7 +193,7 @@ class StockDataView(APIView):
             logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [(data.date) for data in stock_data]
+        dates = [data.date for data in stock_data]
         prices = [float(data.close) for data in stock_data]
 
         response_data = {
@@ -207,6 +206,15 @@ class StockDataView(APIView):
 
         return JsonResponse(response_data)
 
+def parse_date(date_str):
+    try:
+        date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except ValueError:
+        date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S%z")
+    if not date.tzinfo:
+        date = pytz.UTC.localize(date)
+    return date.astimezone(pytz.timezone('America/New_York'))
+
 @csrf_exempt
 def batch_upload(request):
     if request.method == 'POST':
@@ -215,28 +223,21 @@ def batch_upload(request):
             ticker = data.get('ticker')
             stock_data = data.get('stock_data')
 
-            def save_batch(batch):
-                with transaction.atomic():
-                    for entry in batch:
-                        date = (entry.get('date'))
-                        if isinstance(date, str):
-                            date = datetime.fromisoformat(date)
-                        if not date.tzinfo:
-                            date = pytz.UTC.localize(date)
-                        date = (date - timedelta(hours=4)).strftime('%m-%d %I:%M:%S %p')
-                        StockData.objects.update_or_create(
-                            ticker=ticker,
-                            date=date,
-                            defaults={
-                                'close': entry.get('close', 0.0)
-                            }
-                        )
-
-            BATCH_SIZE = 1000
+            BATCH_SIZE = 1000  # Define the batch size
             batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                executor.map(save_batch, batches)
+            for batch in batches:
+                bulk_list = []
+                for entry in batch:
+                    date = parse_date(entry.get('date'))
+                    bulk_list.append(
+                        StockData(
+                            ticker=ticker,
+                            date=date,
+                            close=entry.get('close', 0.0)
+                        )
+                    )
+                StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
 
             return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
         except Exception as e:
