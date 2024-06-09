@@ -112,6 +112,9 @@ class Backtester:
     def __init__(self, initial_capital=10000):
         self.initial_capital = initial_capital
         self.market_env = MarketEnvironment()
+        self.first_bought_at = None
+        self.last_sold_at = None
+        self.portfolio = pd.Series() 
 
     def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, trailing_stop_multiplier, atr_period):
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
@@ -167,6 +170,85 @@ class Backtester:
             'Sold At Date':sold_at_date
         }
 
+    def set_first_bought_at(self, date):
+        self.first_bought_at = date
+
+    def set_last_sold_at(self, date):
+        self.last_sold_at = date
+            
+    def fetch_market_data(self, ticker, start_date, end_date):
+        start_date_utc = start_date.astimezone(pytz.utc).strftime('%Y-%m-%d')
+        end_date += timedelta(days=1)
+        end_date_utc = end_date.astimezone(pytz.utc).strftime('%Y-%m-%d')
+        try:
+            data = yf.download(ticker, start=start_date_utc, end=end_date_utc, interval='1m', progress=False)
+            data.index = data.index.tz_convert('America/New_York')
+            return data['Close']
+        except Exception as e:
+            logging.error(f"Failed to download data for {ticker}: {str(e)}")
+            return None
+        
+    def initialize_portfolio(self):
+        if self.first_bought_at and self.last_sold_at:
+            self.first_bought_at = self.round_to_nearest_minute(self.first_bought_at)
+            self.last_sold_at = self.round_to_nearest_minute(self.last_sold_at)
+
+            logging.info(f"Initializing portfolio from {self.first_bought_at} to {self.last_sold_at}")
+            
+            data_range = pd.date_range(start=self.first_bought_at, end=self.last_sold_at, freq='T', tz='America/New_York')
+            data_range = data_range[data_range.indexer_between_time('09:30', '15:59')]
+            data_range = data_range[data_range.dayofweek < 5]
+            
+            logging.info(f"Data range for portfolio: {data_range}")
+
+            self.portfolio = pd.Series(np.full(len(data_range), self.initial_capital), index=data_range)
+            logging.info(f"Portfolio initialized with start: {self.portfolio.index[0]} and end: {self.portfolio.index[-1]}")
+
+    def round_to_nearest_minute(self, dt):
+        if dt.second >= 30:
+            dt += timedelta(minutes=1)
+        return dt.replace(second=0, microsecond=0)
+
+    def evaluate_all_trades(self, trades, data):
+        for trade in trades:
+            entry_date = self.round_to_nearest_minute(trade['entry_date'])
+            exit_date = self.round_to_nearest_minute(trade['exit_date'])
+
+            # Check if entry and exit dates are present in the data
+            if entry_date not in data.index or exit_date not in data.index:
+                logging.error(f"Timestamp {entry_date if entry_date not in data.index else exit_date} is missing in the data index.")
+                continue  
+
+            # Adjust entry and exit dates to nearest available minute
+            entry_date = entry_date if entry_date in data.index else data.index.asof(entry_date)
+            exit_date = exit_date if exit_date in data.index else data.index.asof(exit_date)
+
+            entry_price = data.at[entry_date]
+            exit_price = data.at[exit_date]
+
+            trade_dates = pd.date_range(start=entry_date, end=exit_date, freq='T', tz='America/New_York')
+            trade_dates = trade_dates.intersection(self.portfolio.index)
+            
+            if debug_mode:
+                logging.info(f"Processing trade from {trade['entry_date']} to {trade['exit_date']}")
+                logging.info(f"Adjusted entry_date: {entry_date}, exit_date: {exit_date}")
+                logging.info(f"Entry price: {entry_price}, Exit price: {exit_price}")
+                logging.info(f"Trade dates: {trade_dates}")
+
+            if not trade_dates.empty:
+                for date in trade_dates:
+                    if date in data.index:
+                        current_price = data.at[date]
+                        profit_loss_ratio = current_price / entry_price
+                        self.portfolio.loc[date:] *= profit_loss_ratio 
+                        entry_price = current_price
+                self.portfolio.ffill(inplace=True)
+            else:
+                logging.error(f"No intersection between trade dates and portfolio index for trade from {trade['entry_date']} to {trade['exit_date']}.")
+                
+    def finalize_portfolio(self):
+        self.portfolio.ffill(inplace=True)
+
 def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callout_price, param_ranges, backtester):
     results = []
     for atr_mult, stop_mult, atr_period in itertools.product(param_ranges['atr_multiplier'], param_ranges['trailing_stop_loss_multiplier'], param_ranges['atr_periods']):
@@ -211,7 +293,6 @@ def parallel_optimize_strategy(df, param_ranges):
     return pd.DataFrame(results)
 
 class GPTTwitter:
-    ht_dynamic = []
     def __init__(self, username):
         self.username = username
         self.client = tweepy.Client(bearer_token=big_baller_moves.bossman_tingz["twitter_api_key"])
@@ -359,7 +440,6 @@ class GPTTwitter:
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
     def get_jpg_url(self, driver, link):
-        self.ht_dynamic = []
         max_attempts, wait_time = 2, 0.5
         for attempt in range(max_attempts):
             try:
@@ -420,7 +500,6 @@ class GPTTwitter:
         return results
     
     def process_tweets(self):
-        self.ht_dynamic = []
         if not self.df.empty:
             self.initialize_webdrivers()
             self.df["image_url"] = self.df["entities"].apply(self.get_display_url)

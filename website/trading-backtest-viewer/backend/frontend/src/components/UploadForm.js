@@ -17,6 +17,7 @@ function UploadForm() {
   const [message, setMessage] = useState('');
   const [results, setResults] = useState([]);
   const [openRow, setOpenRow] = useState(null);
+  const [portfolioChartData, setPortfolioChartData] = useState(null);
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
@@ -30,6 +31,7 @@ function UploadForm() {
       const response = await API.post('upload/', data);
       setMessage('Processing successful');
       const initialResults = response.data.data || [];
+      setPortfolioChartData(response.data.portfolio_chart_data); // Set the portfolio chart data
       await Promise.all(initialResults.map(async result => {
         try {
           const chartResponse = await API.get(`/api/stockdata/${result.ticker}/`);
@@ -120,6 +122,24 @@ function UploadForm() {
           {message}
         </Typography>
       )}
+      {portfolioChartData && (
+        <Box sx={{ marginTop: '16px' }}>
+          <Typography variant="h6" gutterBottom component="div">
+            Portfolio Performance
+          </Typography>
+          <Line data={{
+            labels: portfolioChartData.dates.map(date => dayjs(date).tz('America/New_York').format('MM-DD hh:mm A')),
+            datasets: [
+              {
+                label: 'Portfolio Value',
+                data: portfolioChartData.values,
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.5)',
+              }
+            ]
+          }} />
+        </Box>
+      )}
       {results.length > 0 && (
         <TableContainer component={Paper} style={{ marginTop: '16px' }}>
           <Table>
@@ -163,7 +183,7 @@ function UploadForm() {
                                     data: result.chartData.prices || [],
                                     borderColor: 'rgb(75, 192, 192)',
                                     backgroundColor: 'rgba(75, 192, 192, 0.5)',
-                                    order: 2,  // Ensure this dataset is drawn below
+                                    order: 2,
                                   },
                                   {
                                     label: 'Created At',
@@ -176,7 +196,7 @@ function UploadForm() {
                                       i === result.createdAtIndex ? 7 : 0
                                     ),
                                     showLine: false,
-                                    order: 1,  // Ensure this dataset is drawn above
+                                    order: 1,
                                   },
                                   {
                                     label: 'Sale Point',
@@ -189,7 +209,7 @@ function UploadForm() {
                                       i === result.saleIndex ? 7 : 0
                                     ),
                                     showLine: false,
-                                    order: 1,  // Ensure this dataset is drawn above
+                                    order: 1,
                                   }
                                 ]
                               }} />

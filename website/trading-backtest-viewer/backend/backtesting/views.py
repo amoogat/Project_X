@@ -5,7 +5,7 @@ import logging, pytz, json
 import pandas as pd
 import numpy as np
 from .models import BacktestResult, get_default_strategy, StockData
-from .services import parallel_optimize_strategy, GPTTwitter 
+from .services import parallel_optimize_strategy, GPTTwitter, Backtester
 from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
@@ -122,24 +122,63 @@ def upload_file(request):
         Corect Output: [FXI Open Long]
         """
         user_prompt = "Is this tweet referring to the opening or closing of a stock position? If it is, please also list the corresponding ticker and whether it is long or short. If it is not referring to the opening or closing of a position, simply put neither. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
-        ht_dynamic = []
+        
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
         
         df = twitter_processor.heisenberg_tweets.copy()
         df['ticker'] = df['result'].apply(return_stock)
         df['buy'] = df['result'].apply(return_open_close)
         df = df.loc[(df['ticker'].notnull()) & (df['buy'] == 1)]
-
-        # Convert 'created_at' to datetime and remove timezone
         df['created_at'] = pd.to_datetime(df['created_at']).dt.tz_localize(None)
         
+        # Optimizes strategy so we can backtest username
         results = parallel_optimize_strategy(df, param_ranges)
         best_results = results.loc[results.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
         best_results = best_results.sort_values(by='final_equity', ascending=False)
         results_list = best_results.to_dict('records')
         default_strategy_id = get_default_strategy()
+        best_results_sorted_by_date = best_results.sort_values(by='created_at')
 
-        for result in results_list:
+        # Whole market backtest, needs first bought and last sold timestamps
+        tz = pytz.timezone('America/New_York')
+        portfolio_backtester = Backtester()
+        first_bought_at = best_results_sorted_by_date['created_at'].min()
+        last_sold_at = best_results_sorted_by_date['sold_at_date'].max()
+        first_bought_at = pd.to_datetime(first_bought_at).tz_localize(tz) if first_bought_at.tzinfo is None else pd.to_datetime(first_bought_at).tz_convert(tz)
+        last_sold_at = pd.to_datetime(last_sold_at).tz_localize(tz) if last_sold_at.tzinfo is None else pd.to_datetime(last_sold_at).tz_convert(tz)
+
+        portfolio_backtester.set_first_bought_at(first_bought_at)
+        portfolio_backtester.set_last_sold_at(last_sold_at)
+        portfolio_backtester.initialize_portfolio()
+
+        # Loops through each trade and fetches stock data during this time period
+        market_data_cache = {}
+        for result in best_results_sorted_by_date.itertuples():
+            ticker = result.ticker
+            start_date = pd.to_datetime(result.created_at).tz_localize(tz) if result.created_at.tzinfo is None else pd.to_datetime(result.created_at).tz_convert(tz)
+            end_date = pd.to_datetime(result.sold_at_date).tz_localize(tz) if result.sold_at_date.tzinfo is None else pd.to_datetime(result.sold_at_date).tz_convert(tz)
+            logging.info(f"Processing trade for {ticker} from {start_date} to {end_date}")
+            cache_key = f"{ticker}_{start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}"
+            if cache_key not in market_data_cache:
+                market_data = portfolio_backtester.fetch_market_data(ticker, start_date, end_date)
+                market_data_cache[cache_key] = market_data
+            if market_data_cache[cache_key] is not None:
+                trades = [{
+                    'entry_date': start_date,
+                    'exit_date': end_date,
+                }]
+                portfolio_backtester.evaluate_all_trades(trades, market_data_cache[cache_key])
+                
+        # Exports to df for full port view
+        portfolio_backtester.finalize_portfolio()
+        portfolio_df = portfolio_backtester.portfolio.reset_index()
+        portfolio_df.columns = ['date', 'value']
+        portfolio_chart_data = {
+            'dates': portfolio_df['date'].astype(str).tolist(),
+            'values': portfolio_df['value'].tolist()
+        }
+        # Individual trade serialized for chart view
+        for result in results_list:            
             result_data = {
                 'username': username, 
                 'strategy': default_strategy_id,
@@ -155,6 +194,7 @@ def upload_file(request):
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
                 'successful_trades': result.get('successful_trades', 0),
                 'minutes_taken': result.get('minutes_taken', 0),
+                'sold_at_date':result.get('sold_at_date'),
                 'score': result.get('score', 0.0)
             }
 
@@ -164,14 +204,15 @@ def upload_file(request):
             else:
                 logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
+        return Response({'status': 'success', 'data': results_list, 'portfolio_chart_data': portfolio_chart_data}, status=201)
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        return Response({'status': 'error', 'message': 'An internal error occurred.'})
+    finally:
         try:
             twitter_processor.close_drivers()
         except Exception as e:
             logging.error(str(e))
-        return Response({'status': 'success', 'data': results_list}, status=201)
-    except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
-        return Response({'status': 'error', 'message': 'An internal error occurred.'})
 
 @api_view(['GET'])
 def results_view(request):
