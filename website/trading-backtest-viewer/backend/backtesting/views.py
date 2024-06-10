@@ -169,14 +169,14 @@ def upload_file(request):
                 }]
                 portfolio_backtester.evaluate_all_trades(trades, market_data_cache[cache_key])
                 
-        # Exports to df for full port view
+        # Finalize and export portfolio data for chart view
         portfolio_backtester.finalize_portfolio()
         portfolio_df = portfolio_backtester.portfolio.reset_index()
         portfolio_df.columns = ['date', 'value']
         portfolio_chart_data = {
             'dates': portfolio_df['date'].astype(str).tolist(),
             'values': portfolio_df['value'].tolist()
-        }
+}
         # Individual trade serialized for chart view
         for result in results_list:            
             result_data = {

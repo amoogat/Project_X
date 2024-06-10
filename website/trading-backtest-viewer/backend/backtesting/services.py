@@ -114,7 +114,7 @@ class Backtester:
         self.market_env = MarketEnvironment()
         self.first_bought_at = None
         self.last_sold_at = None
-        self.portfolio = pd.Series() 
+        self.portfolio = pd.DataFrame()
 
     def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, trailing_stop_multiplier, atr_period):
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
@@ -122,7 +122,7 @@ class Backtester:
         dates = data_for_backtest.index.tolist()
         return self.evaluate_trades(profit_losses, atr, trailing_stop_multiplier, dates)
 
-    def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier,dates):
+    def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier, dates):
         portfolio = {
             'Capital': self.initial_capital,
             'Cash': self.initial_capital,
@@ -138,7 +138,7 @@ class Backtester:
         minutes_taken = 0
         sold_at_date = None
         
-        for i, (profit_loss, date) in enumerate(zip(profit_losses,dates)):
+        for i, (profit_loss, date) in enumerate(zip(profit_losses, dates)):
             if profit_loss > max_profit_loss:
                 max_profit_loss = profit_loss
             if profit_loss < max_profit_loss - (atr * trailing_stop_multiplier) or i == len(profit_losses) - 1:
@@ -159,7 +159,7 @@ class Backtester:
         max_drawdown = max(portfolio['Drawdowns']) if portfolio['Drawdowns'] else 0
         avg_trade_gain = np.mean(portfolio['Returns']) if portfolio['Returns'] else 0
         return {
-            'Total Return': total_return*100,
+            'Total Return': total_return * 100,
             'Portfolio Variance': portfolio_variance,
             'Sharpe Ratio': sharpe_ratio,
             'Final Equity': portfolio['Cash'],
@@ -167,7 +167,7 @@ class Backtester:
             'Average Trade Gain': avg_trade_gain,
             'Successful Trades': portfolio['Successful Trades'],
             'Minutes Taken': minutes_taken,
-            'Sold At Date':sold_at_date
+            'Sold At Date': sold_at_date
         }
 
     def set_first_bought_at(self, date):
@@ -187,22 +187,22 @@ class Backtester:
         except Exception as e:
             logging.error(f"Failed to download data for {ticker}: {str(e)}")
             return None
-        
+
     def initialize_portfolio(self):
         if self.first_bought_at and self.last_sold_at:
             self.first_bought_at = self.round_to_nearest_minute(self.first_bought_at)
             self.last_sold_at = self.round_to_nearest_minute(self.last_sold_at)
-
-            logging.info(f"Initializing portfolio from {self.first_bought_at} to {self.last_sold_at}")
             
             data_range = pd.date_range(start=self.first_bought_at, end=self.last_sold_at, freq='T', tz='America/New_York')
             data_range = data_range[data_range.indexer_between_time('09:30', '15:59')]
             data_range = data_range[data_range.dayofweek < 5]
-            
-            logging.info(f"Data range for portfolio: {data_range}")
 
-            self.portfolio = pd.Series(np.full(len(data_range), self.initial_capital), index=data_range)
-            logging.info(f"Portfolio initialized with start: {self.portfolio.index[0]} and end: {self.portfolio.index[-1]}")
+            self.portfolio = pd.DataFrame(index=data_range)  # Initialize as DataFrame with date range index
+            
+            if debug_mode:
+                logging.info(f"Portfolio initialized with start: {self.portfolio.index[0]} and end: {self.portfolio.index[-1]}")
+                logging.info(f"Initializing portfolio from {self.first_bought_at} to {self.last_sold_at}")
+                logging.info(f"Data range for portfolio: {data_range}")
 
     def round_to_nearest_minute(self, dt):
         if dt.second >= 30:
@@ -236,17 +236,23 @@ class Backtester:
                 logging.info(f"Trade dates: {trade_dates}")
 
             if not trade_dates.empty:
+                temp_series = pd.Series(1, index=self.portfolio.index)
                 for date in trade_dates:
                     if date in data.index:
                         current_price = data.at[date]
                         profit_loss_ratio = current_price / entry_price
-                        self.portfolio.loc[date:] *= profit_loss_ratio 
+                        temp_series.loc[date:] *= profit_loss_ratio 
                         entry_price = current_price
-                self.portfolio.ffill(inplace=True)
+                self.portfolio[f"Trade_{entry_date}"] = temp_series
+                self.portfolio.fillna(method='ffill', inplace=True)
             else:
                 logging.error(f"No intersection between trade dates and portfolio index for trade from {trade['entry_date']} to {trade['exit_date']}.")
-                
+    
     def finalize_portfolio(self):
+        if not self.portfolio.empty:
+            # Calculate the average value across all trades for each timestamp
+            self.portfolio['Average'] = self.portfolio.mean(axis=1)
+            self.portfolio = self.portfolio['Average']  # Replace the portfolio with the averaged series
         self.portfolio.ffill(inplace=True)
 
 def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callout_price, param_ranges, backtester):
