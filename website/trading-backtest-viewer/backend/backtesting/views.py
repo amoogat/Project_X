@@ -10,8 +10,7 @@ from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
-from django.db import transaction
-from datetime import datetime, timedelta
+from datetime import datetime
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,13 +18,12 @@ debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
+    # Gets ticker name from message
     message = message.decode('utf-8')
     if message:
         try:
-            # Basic validation to check if the message format is as expected
             parts = message.split()
             if len(parts) > 1:
-                # Cleaning up the stock ticker symbol
                 stock = parts[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
                 # Further validation to check if the cleaned stock symbol is alphanumeric
                 if stock.isalnum():
@@ -36,8 +34,8 @@ def return_stock(message):
             logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
     return None
 
-
 def return_open_close(message):
+    # Gets open or close data from message
     message = message.decode('utf-8')
     if not message:
         return 0
@@ -52,9 +50,8 @@ def upload_file(request):
         username = request.data.get('username')
         if not username:
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
-        
+        # Checks if the username already has data in the database - skips process in production
         if not debug_mode:
-            # Check if the username already has data in the database
             existing_results = BacktestResult.objects.filter(username=username).distinct('ticker', 'created_at')
             if existing_results.exists():
                 # Serialize and return the existing results
@@ -168,17 +165,16 @@ def upload_file(request):
                     'exit_date': end_date,
                 }]
                 portfolio_backtester.evaluate_all_trades(trades, market_data_cache[cache_key])
-                
-        # Finalize and export portfolio data for chart view
+
+        # Finalizes and exports portfolio data for chart view
         portfolio_backtester.finalize_portfolio()
         portfolio_df = portfolio_backtester.portfolio.reset_index()
         portfolio_df.columns = ['date', 'value']
-        portfolio_chart_data = {
-            'dates': portfolio_df['date'].astype(str).tolist(),
-            'values': portfolio_df['value'].tolist()
-}
-        # Individual trade serialized for chart view
-        for result in results_list:            
+        portfolio_chart_data = { 'dates': portfolio_df['date'].astype(str).tolist(),
+                                'values': portfolio_df['value'].tolist() }
+        
+        # Individual trades serialized for chart view
+        for result in results_list:
             result_data = {
                 'username': username, 
                 'strategy': default_strategy_id,
@@ -223,12 +219,12 @@ def results_view(request):
 def upload_form_view(request):
     if request.method == 'POST':
         username = request.POST.get('username')
-        # Process the username, possibly calling an external API or service
         return redirect('success_url')  # Redirect after POST
     return render(request, 'upload.html')
 
 @method_decorator(csrf_exempt, name='dispatch')
 class StockDataView(APIView):
+    # Will display chart on click for individual stock plays
     def get(self, request, ticker):
         if debug_mode:
             logging.info(f"Received request for ticker: {ticker}")
@@ -244,7 +240,6 @@ class StockDataView(APIView):
                 'prices': prices,
             }
         }
-
         return JsonResponse(response_data)
 
 def parse_date(date_str):
@@ -257,6 +252,7 @@ def parse_date(date_str):
     return date.astimezone(pytz.timezone('America/New_York'))
 
 def save_batch(batch, ticker):
+    # Saves the batch of stock data if it doesnt already exist in our database
     try:
         bulk_list = []
         existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
@@ -281,13 +277,14 @@ def save_batch(batch, ticker):
 
 @csrf_exempt
 def batch_upload(request):
+    # Uploads the chart data in batches - enhances speed
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
             ticker = data.get('ticker')
             stock_data = data.get('stock_data')
 
-            BATCH_SIZE = 1000  # Define the batch size
+            BATCH_SIZE = 1000  # Define the batch size as per server reqs
             batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
 
             with ThreadPoolExecutor(max_workers=2) as executor:  

@@ -15,7 +15,6 @@ from.models import StockData
 import httpx
 import asyncio
 from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
-from django.db import transaction
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
 if config_path not in sys.path:
@@ -31,6 +30,7 @@ class MarketEnvironment:
         self.closest_time_index = None
 
     def adjust_to_trading_hours(self, dt):
+        # ENsures datetime timestamp is correct and timestmap is in the NYSE trading hours
         if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
             dt = pytz.timezone('America/New_York').localize(dt)
         if dt.weekday() >= 5:  
@@ -43,6 +43,7 @@ class MarketEnvironment:
     
     def save_stock_data(self, ticker, data):
         try:
+            # Saves stock data if not already in our database
             existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
             bulk_list = []
             for index, row in data.iterrows():
@@ -59,7 +60,7 @@ class MarketEnvironment:
                         )
                     )
             if bulk_list:
-                StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)  # ignore_conflicts=True prevents errors on duplicates
+                StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
             else:
                 logging.info(str(ticker) + ' on ' + str(index) + ' has already been processed, skipping save..')
             if debug_mode:
@@ -67,12 +68,13 @@ class MarketEnvironment:
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
 
-
     def fetch_market_data(self, ticker, signal_date):
-        if ticker in ['U','YINN']:
-            logging.error('Ticker is known to not be on RH so it wont work now.')
+        # Gets market data from Yahoo Finance in a range for valid tickers
+        ticker_whitelist = []
+        if ticker in ticker_whitelist:
+            logging.error('Ticker is known to not be on yFinance so it wont work now.')
             return None,None,None
-
+        # If no timezone info, or UTC detected, sets to NYC; Ensures date is in trading hours
         if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
             signal_date = pytz.timezone('America/New_York').localize(signal_date)
         signal_date = self.adjust_to_trading_hours(signal_date)
@@ -80,13 +82,14 @@ class MarketEnvironment:
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
         attempts, wait = 7, 0.1
-        for attempt in range(attempts):
+        for _ in range(attempts):
             try:
                 data = yf.download(ticker, start=start_date_utc.strftime('%Y-%m-%d'), end=end_date_utc.strftime('%Y-%m-%d'), interval='1m', progress=False)
                 if data.empty:
                     continue
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
                 data = data[(data.index <= end_date_utc)]
+                # Saves stock data, splits data into backtest and ATR calculation (6:1 ratio)
                 self.save_stock_data(ticker, data)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']
@@ -102,6 +105,7 @@ class MarketEnvironment:
         return None, None, None
 
     def calculate_atr(self, data, period):
+        # Gets ATR as an indicator for exit conditions
         high_low = data['High'] - data['Low']
         high_close = np.abs(data['High'] - data['Close'].shift())
         low_close = np.abs(data['Low'] - data['Close'].shift())
@@ -117,12 +121,14 @@ class Backtester:
         self.portfolio = pd.DataFrame()
 
     def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, trailing_stop_multiplier, atr_period):
+        # Gets a continuous profit_losses list to evaluate callout based on price data that follows
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
         profit_losses = ((data_for_backtest['Close'] - callout_price) / callout_price * 100).tolist()
         dates = data_for_backtest.index.tolist()
         return self.evaluate_trades(profit_losses, atr, trailing_stop_multiplier, dates)
 
     def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier, dates):
+        # Backtests profit loss for an individual trade
         portfolio = {
             'Capital': self.initial_capital,
             'Cash': self.initial_capital,
@@ -153,6 +159,7 @@ class Backtester:
                 if profit_loss > 1 and drawdown < 0.005:
                     portfolio['Successful Trades'] += 1
                 break
+        # Calculate variance, max drawdown and sharpe ratio for future analyses
         total_return = (portfolio['Cash'] - self.initial_capital) / self.initial_capital
         portfolio_variance = np.var(portfolio['Returns']) if portfolio['Returns'] else 0
         sharpe_ratio = total_return / np.sqrt(portfolio_variance) if portfolio_variance else 0
@@ -177,6 +184,7 @@ class Backtester:
         self.last_sold_at = date
             
     def fetch_market_data(self, ticker, start_date, end_date):
+        # Gets the market data from yahoo finance wihthin our trading dates at a 1m interval
         start_date_utc = start_date.astimezone(pytz.utc).strftime('%Y-%m-%d')
         end_date += timedelta(days=1)
         end_date_utc = end_date.astimezone(pytz.utc).strftime('%Y-%m-%d')
@@ -189,6 +197,7 @@ class Backtester:
             return None
 
     def initialize_portfolio(self):
+        # Creates a dataframe with the index being market minutes from the first callout to last sale
         if self.first_bought_at and self.last_sold_at:
             self.first_bought_at = self.round_to_nearest_minute(self.first_bought_at)
             self.last_sold_at = self.round_to_nearest_minute(self.last_sold_at)
@@ -197,7 +206,7 @@ class Backtester:
             data_range = data_range[data_range.indexer_between_time('09:30', '15:59')]
             data_range = data_range[data_range.dayofweek < 5]
 
-            self.portfolio = pd.DataFrame(index=data_range)  # Initialize as DataFrame with date range index
+            self.portfolio = pd.DataFrame(index=data_range) 
             
             if debug_mode:
                 logging.info(f"Portfolio initialized with start: {self.portfolio.index[0]} and end: {self.portfolio.index[-1]}")
@@ -214,12 +223,12 @@ class Backtester:
             entry_date = self.round_to_nearest_minute(trade['entry_date'])
             exit_date = self.round_to_nearest_minute(trade['exit_date'])
 
-            # Check if entry and exit dates are present in the data
+            # Checks if entry and exit dates are present in the data
             if entry_date not in data.index or exit_date not in data.index:
                 logging.error(f"Timestamp {entry_date if entry_date not in data.index else exit_date} is missing in the data index.")
                 continue  
 
-            # Adjust entry and exit dates to nearest available minute
+            # Adjusts entry and exit dates to nearest available minute
             entry_date = entry_date if entry_date in data.index else data.index.asof(entry_date)
             exit_date = exit_date if exit_date in data.index else data.index.asof(exit_date)
 
@@ -235,6 +244,7 @@ class Backtester:
                 logging.info(f"Entry price: {entry_price}, Exit price: {exit_price}")
                 logging.info(f"Trade dates: {trade_dates}")
 
+            # Calculates the current profit loss into the dataframe
             if not trade_dates.empty:
                 temp_series = pd.Series(1, index=self.portfolio.index)
                 for date in trade_dates:
@@ -250,12 +260,13 @@ class Backtester:
     
     def finalize_portfolio(self):
         if not self.portfolio.empty:
-            # Calculate the average value across all trades for each timestamp
+            # Calculates the average value across all trades for each timestamp
             self.portfolio['Average'] = self.portfolio.mean(axis=1)
-            self.portfolio = self.portfolio['Average']  # Replace the portfolio with the averaged series
+            self.portfolio = self.portfolio['Average']  
         self.portfolio.ffill(inplace=True)
 
 def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callout_price, param_ranges, backtester):
+    # Loops through around 150 parameter combinations to find an arbitrary "good" exit point
     results = []
     for atr_mult, stop_mult, atr_period in itertools.product(param_ranges['atr_multiplier'], param_ranges['trailing_stop_loss_multiplier'], param_ranges['atr_periods']):
         result = backtester.run_backtest(data_for_atr, data_for_backtest, callout_price, atr_mult, stop_mult, atr_period)
@@ -280,6 +291,7 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
     return results
 
 def process_row(row,backtester,param_ranges):
+    # Fetches market data for a ticker starting from a callout date, optimizes strategy
     data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']))
     if data_for_atr is not None and data_for_backtest is not None:
         return optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
@@ -287,9 +299,9 @@ def process_row(row,backtester,param_ranges):
         return []
     
 def parallel_optimize_strategy(df, param_ranges):
+    # Optimizes a strategy using ATR and Trailing Stop asynchronously
     backtester = Backtester()
     results = []
-
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(process_row, row, backtester, param_ranges): row for _, row in df.iterrows()}
         for future in as_completed(futures):
@@ -335,8 +347,8 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id = self.user_id,
-            max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
-            tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],  # Fields we  want to retrieve for each tweet
+            max_results = 13,  # Number of tweets to retrieve (can adjust as needed)
+            tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],
             media_fields = ['preview_image_url', 'url'],
             exclude = ['retweets', 'replies'],
             expansions = ['attachments.media_keys', 'author_id']
@@ -351,7 +363,8 @@ class GPTTwitter:
             return 0
 
     def initialize_webdriver(self):
-        options = webdriver.ChromeOptions()  # Example for Chrome, change as needed
+        # Initializes the webdriver hub with optimal Selenium settings for scraping
+        options = webdriver.ChromeOptions()
         options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
@@ -361,21 +374,22 @@ class GPTTwitter:
         options.add_argument("--disable-dev-tools")
         options.add_argument('blink-settings=imagesEnabled=false')
 
-        # Specify capabilities if needed, or just rely on default
         capabilities = options.to_capabilities()
 
         driver = webdriver.Remote(
-            command_executor="http://localhost:4444/wd/hub",  # Replace with your hub URL
+            command_executor="http://localhost:4444/wd/hub",
             desired_capabilities=capabilities
         )
         return driver
     
     def close_drivers(self):
+        # Ensures no chrome subprocesses left running
         for driver in self.drivers:
             driver.quit()
         self.drivers = []
     
     async def get_response_image(self, text):
+        # Asynchronously gets the stock purchase information out of an image from OpenAI 4o
         if not text:
             return "No image available"
         if not isinstance(text, str):
@@ -394,7 +408,7 @@ class GPTTwitter:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play, please specify if it is ultimately bullish (long) or bearish (short)."},
-                        {"type": "image_url", "image_url": {"url": text}},  # Ensure this matches the expected structure
+                        {"type": "image_url", "image_url": {"url": text,"detail":"auto"}},
                     ]
                 }
             ]
@@ -409,6 +423,7 @@ class GPTTwitter:
 
 
     async def dynamic_prompting(self, text, sys_prompt, user_prompt):
+        # Asynchronously gets [Open/Close] [Ticker] [Long/Short] from tweet + image data
         url = "https://api.openai.com/v1/chat/completions"  
         headers = {
             "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
@@ -458,9 +473,9 @@ class GPTTwitter:
                     return None
                 url = f'https://{link}'
                 driver.get(url)
-                # Wait for potential redirects and the page to stabilize
+                # Waits for potential redirects and the page to stabilize
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-                time.sleep(wait_time)  # Extended sleep to ensure the page is loaded
+                time.sleep(wait_time)
                 images = driver.find_elements(By.TAG_NAME, "img")
                 for img in images:
                     img_src = img.get_attribute('src')
@@ -476,18 +491,16 @@ class GPTTwitter:
         return None
     
     def initialize_webdrivers(self):
-        # Clear existing drivers if any
+        # Clears existing drivers if any, initializes a WebDriver for each node URL
         self.close_drivers()
-        # Initialize a WebDriver for each node URL
         for node_url in self.node_urls:
             self.drivers.append(self.initialize_webdriver())
 
     def fetch_images_concurrently(self, links):
-        results = [None] * len(links)  # Pre-fill results with None for each link
-        # Map each link to a driver, ensuring no more drivers are used than available
-        link_driver_pairs = zip(links, cycle(self.drivers))  # cycle to reuse drivers if more links than drivers
+        results = [None] * len(links)
+        link_driver_pairs = zip(links, cycle(self.drivers))  # cycle drivers if more links than drivers
 
-        # Use ThreadPoolExecutor to manage concurrent WebDriver usage
+        # Uses ThreadPoolExecutor to manage concurrent WebDriver usage
         with ThreadPoolExecutor(max_workers=1) as executor:
             future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
             for future in as_completed(future_to_link):
@@ -502,16 +515,17 @@ class GPTTwitter:
                             logging.info(f"No image found for link index {str(idx)}.")
                 except Exception as e:
                     logging.info(f"Error processing link at index {idx}: {str(e)}")
-                    results[idx] = None  # Ensure failed results are marked as None
+                    results[idx] = None  
         return results
     
     def process_tweets(self):
         if not self.df.empty:
+            # Gets jpg url - uses Selenium grid to concurrently scrape
             self.initialize_webdrivers()
             self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
             selected_columns = ['id', 'text', 'created_at', 'image_url']
             self.heisenberg_tweets = self.df[selected_columns].copy()
-            self.heisenberg_tweets['image_response'] = None  # Initialize the column to avoid key errors
+            self.heisenberg_tweets['image_response'] = None
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_convert('America/New_York')
             
             urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
@@ -522,6 +536,7 @@ class GPTTwitter:
                     if img_url:
                         self.heisenberg_tweets.at[idx, 'jpg_url'] = img_url
 
+            # Async runs the OpenAI calls to turn an image -> transcribed image data
             if self.heisenberg_tweets['jpg_url'].any():
                 non_null_urls = self.heisenberg_tweets['jpg_url'].dropna().tolist()
                 image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
@@ -541,13 +556,13 @@ class GPTTwitter:
             logging.error("No data to process. DataFrame is empty.")
                     
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
+        # Async runs openAI calls tweet + transcribed image data -> [open/close] [Ticker] [Long/Close]
         if self.heisenberg_tweets is not None and not self.heisenberg_tweets.empty:
             async def fetch_and_process_all():
                 tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.heisenberg_tweets.iterrows()]
                 responses = await asyncio.gather(*tasks)
                 return responses
 
-            # Run the asynchronous tasks and fetch responses
             responses = asyncio.run(fetch_and_process_all())
 
             # Check if 'result' column can be added or if it already exists
