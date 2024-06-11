@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Line } from 'react-chartjs-2';
 import 'chart.js/auto';
-import { Button, Box, Typography, TextField, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, Collapse } from '@mui/material';
+import { Button, Box, Typography, TextField, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, Collapse, CircularProgress } from '@mui/material';
 import API from '../api';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -10,7 +10,7 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-const BATCH_SIZE = 1000;  // Adjust this value based on your requirements and server capability
+const BATCH_SIZE = 1000;
 
 function UploadForm() {
   const [username, setUsername] = useState('');
@@ -18,6 +18,7 @@ function UploadForm() {
   const [results, setResults] = useState([]);
   const [openRow, setOpenRow] = useState(null);
   const [portfolioChartData, setPortfolioChartData] = useState(null);
+  const [loading, setLoading] = useState(false);  // Loading state
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
@@ -26,29 +27,42 @@ function UploadForm() {
       setMessage('Please provide a username.');
       return;
     }
+    setLoading(true);  // Start loading
+    setMessage('');
+    setResults([]);
+    setPortfolioChartData(null);
     const data = { username };
+
     try {
       const response = await API.post('upload/', data);
       setMessage('Processing successful');
       const initialResults = response.data.data || [];
       setPortfolioChartData(response.data.portfolio_chart_data); // Set the portfolio chart data
-      await Promise.all(initialResults.map(async result => {
+
+      const updatedResults = await Promise.all(initialResults.map(async result => {
         try {
           const chartResponse = await API.get(`/api/stockdata/${result.ticker}/`);
           result.chartData = chartResponse.data.chartData;
           result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
           result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
-          setResults(prevResults => [...prevResults, result]);
           if (chartResponse.data.chartData) {
             await handleBatchUpload(result.ticker, chartResponse.data.chartData);
           }
+          return result;
         } catch (error) {
           console.error('Error fetching chart data:', error);
+          return null;  // Skip failed results
         }
       }));
+
+      // Update results state once after processing all initial results
+      setResults(updatedResults.filter(result => result !== null));
+
     } catch (error) {
       setMessage('Error processing username');
       console.error('Upload error:', error);
+    } finally {
+      setLoading(false);  // End loading
     }
   };
 
@@ -114,11 +128,16 @@ function UploadForm() {
         fullWidth
         style={{ marginBottom: '16px' }}
       />
-      <Button variant="contained" color="primary" onClick={handleUpload} style={{ marginTop: '16px' }}>
+      <Button variant="contained" color="primary" onClick={handleUpload} style={{ marginTop: '16px' }} disabled={loading}>
         Process
       </Button>
+      {loading && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+          <CircularProgress />
+        </Box>
+      )}
       {message && (
-        <Typography variant="body2" color="error" style={{ marginTop: '16px' }}>
+        <Typography variant="body2" color={message.includes('error') ? 'error' : 'primary'} style={{ marginTop: '16px' }}>
           {message}
         </Typography>
       )}
@@ -198,7 +217,7 @@ function UploadForm() {
                                     showLine: false,
                                     order: 1,
                                   },
-                                  {
+                                  { 
                                     label: 'Sale Point',
                                     data: result.chartData.dates.map((date, i) =>
                                       i === result.saleIndex ? result.chartData.prices[i] : null

@@ -176,7 +176,22 @@ class Backtester:
             'Minutes Taken': minutes_taken,
             'Sold At Date': sold_at_date
         }
-
+        
+    def adjust_to_trading_hours(self, dt):
+        if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+            dt = pytz.timezone('America/New_York').localize(dt)
+        if dt.weekday() >= 5:  # If it's Saturday or Sunday, move to next Monday 9:30 AM
+            dt += timedelta(days=(7 - dt.weekday()))
+            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        elif dt.hour < 9 or (dt.hour == 9 and dt.minute < 30):  # If before market opens, move to 9:30 AM same day
+            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        elif dt.hour >= 16:  # If after market closes, move to 9:30 AM next trading day
+            dt += timedelta(days=1)
+            while dt.weekday() >= 5:  # Skip weekends
+                dt += timedelta(days=1)
+            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        return dt
+    
     def set_first_bought_at(self, date):
         self.first_bought_at = date
 
@@ -222,7 +237,11 @@ class Backtester:
         for trade in trades:
             entry_date = self.round_to_nearest_minute(trade['entry_date'])
             exit_date = self.round_to_nearest_minute(trade['exit_date'])
-
+            
+            # Adjust dates to within trading hours - skips ahead if not
+            entry_date = self.adjust_to_trading_hours(entry_date)
+            exit_date = self.adjust_to_trading_hours(exit_date)
+            
             # Checks if entry and exit dates are present in the data
             if entry_date not in data.index or exit_date not in data.index:
                 logging.error(f"Timestamp {entry_date if entry_date not in data.index else exit_date} is missing in the data index.")
@@ -347,7 +366,7 @@ class GPTTwitter:
     def get_tweets(self):
         return self.client.get_users_tweets(
             id = self.user_id,
-            max_results = 13,  # Number of tweets to retrieve (can adjust as needed)
+            max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
             tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],
             media_fields = ['preview_image_url', 'url'],
             exclude = ['retweets', 'replies'],
