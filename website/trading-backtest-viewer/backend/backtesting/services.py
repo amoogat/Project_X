@@ -21,7 +21,7 @@ if config_path not in sys.path:
     sys.path.append(config_path)
 import big_baller_moves
 
-debug_mode = True
+debug_level = 1
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MarketEnvironment:
@@ -30,7 +30,7 @@ class MarketEnvironment:
         self.closest_time_index = None
 
     def adjust_to_trading_hours(self, dt):
-        # ENsures datetime timestamp is correct and timestmap is in the NYSE trading hours
+        # Ensures datetime timestamp is correct and timestmap is in the NYSE trading hours
         if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
             dt = pytz.timezone('America/New_York').localize(dt)
         if dt.weekday() >= 5:  
@@ -61,22 +61,15 @@ class MarketEnvironment:
                     )
             if bulk_list:
                 StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
-            else:
-                logging.info(str(ticker) + ' on ' + str(index) + ' has already been processed, skipping save..')
-            if debug_mode:
+            elif debug_level > 0:
+                logging.info(f"{ticker} on {index} has already been processed, skipping save.")
+            if debug_level > 0:
                 logging.info(f"Successfully saved stock data for {ticker}")
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
 
     def fetch_market_data(self, ticker, signal_date):
-        # Gets market data from Yahoo Finance in a range for valid tickers
-        ticker_whitelist = []
-        if ticker in ticker_whitelist:
-            logging.error('Ticker is known to not be on yFinance so it wont work now.')
-            return None,None,None
         # If no timezone info, or UTC detected, sets to NYC; Ensures date is in trading hours
-        if signal_date.tzinfo is None or signal_date.tzinfo.utcoffset(signal_date) is None:
-            signal_date = pytz.timezone('America/New_York').localize(signal_date)
         signal_date = self.adjust_to_trading_hours(signal_date)
         
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
@@ -214,8 +207,8 @@ class Backtester:
     def initialize_portfolio(self):
         # Creates a dataframe with the index being market minutes from the first callout to last sale
         if self.first_bought_at and self.last_sold_at:
-            self.first_bought_at = self.round_to_nearest_minute(self.first_bought_at)
-            self.last_sold_at = self.round_to_nearest_minute(self.last_sold_at)
+            self.first_bought_at = self.first_bought_at
+            self.last_sold_at = self.last_sold_at
             
             data_range = pd.date_range(start=self.first_bought_at, end=self.last_sold_at, freq='T', tz='America/New_York')
             data_range = data_range[data_range.indexer_between_time('09:30', '15:59')]
@@ -223,20 +216,16 @@ class Backtester:
 
             self.portfolio = pd.DataFrame(index=data_range) 
             
-            if debug_mode:
+            if debug_level > 1:
                 logging.info(f"Portfolio initialized with start: {self.portfolio.index[0]} and end: {self.portfolio.index[-1]}")
                 logging.info(f"Initializing portfolio from {self.first_bought_at} to {self.last_sold_at}")
                 logging.info(f"Data range for portfolio: {data_range}")
 
-    def round_to_nearest_minute(self, dt):
-        if dt.second >= 30:
-            dt += timedelta(minutes=1)
-        return dt.replace(second=0, microsecond=0)
-
     def evaluate_all_trades(self, trades, data):
+        trade_counter = 0
         for trade in trades:
-            entry_date = self.round_to_nearest_minute(trade['entry_date'])
-            exit_date = self.round_to_nearest_minute(trade['exit_date'])
+            entry_date = trade['entry_date']
+            exit_date = trade['exit_date']
             
             # Adjust dates to within trading hours - skips ahead if not
             entry_date = self.adjust_to_trading_hours(entry_date)
@@ -257,7 +246,7 @@ class Backtester:
             trade_dates = pd.date_range(start=entry_date, end=exit_date, freq='T', tz='America/New_York')
             trade_dates = trade_dates.intersection(self.portfolio.index)
             
-            if debug_mode:
+            if debug_level > 1:
                 logging.info(f"Processing trade from {trade['entry_date']} to {trade['exit_date']}")
                 logging.info(f"Adjusted entry_date: {entry_date}, exit_date: {exit_date}")
                 logging.info(f"Entry price: {entry_price}, Exit price: {exit_price}")
@@ -270,10 +259,13 @@ class Backtester:
                     if date in data.index:
                         current_price = data.at[date]
                         profit_loss_ratio = current_price / entry_price
-                        temp_series.loc[date:] *= profit_loss_ratio 
+                        temp_series.loc[date:] *= profit_loss_ratio
                         entry_price = current_price
-                self.portfolio[f"Trade_{entry_date}"] = temp_series
+                unique_column_name = f"Trade_{entry_date}_{trade_counter}"
+                self.portfolio[unique_column_name] = temp_series
                 self.portfolio.fillna(method='ffill', inplace=True)
+                trade_counter += 1 
+
             else:
                 logging.error(f"No intersection between trade dates and portfolio index for trade from {trade['entry_date']} to {trade['exit_date']}.")
     
@@ -354,6 +346,7 @@ class GPTTwitter:
         self.drivers = []
         
     def get_user_id(self):
+        # Needed for tweepy :)
         try:
             user = self.client.get_user(username=self.username)
             user_id = user.data.id
@@ -364,6 +357,7 @@ class GPTTwitter:
             return None
 
     def get_tweets(self):
+        # Uses tweepy for fetching tweets with relevant fields
         return self.client.get_users_tweets(
             id = self.user_id,
             max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
@@ -480,33 +474,28 @@ class GPTTwitter:
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
     def get_jpg_url(self, driver, link):
-        max_attempts, wait_time = 2, 0.5
-        for attempt in range(max_attempts):
-            try:
-                if isinstance(link, list):  # Extract first element if URL is a list
-                    for u in link:
-                        if "twitter" in u:
-                            link = u
-                            break
-                if not link:
-                    return None
-                url = f'https://{link}'
-                driver.get(url)
-                # Waits for potential redirects and the page to stabilize
-                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-                time.sleep(wait_time)
-                images = driver.find_elements(By.TAG_NAME, "img")
-                for img in images:
-                    img_src = img.get_attribute('src')
-                    if 'media' in img_src and 'twimg' in img_src:
-                        return img_src
+        try:
+            if isinstance(link, list):  # Extract first element if URL is a list
+                for u in link:
+                    if "twitter" in u:
+                        link = u
+                        break
+            if not link:
+                return None
+            url = f'https://{link}'
+            driver.get(url)
+            # Waits for potential redirects and the page to stabilize
+            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
+            time.sleep(0.5)
+            images = driver.find_elements(By.TAG_NAME, "img")
+            for img in images:
+                img_src = img.get_attribute('src')
+                if 'media' in img_src and 'twimg' in img_src:
+                    return img_src
+            if debug_level > 0:
                 logging.info("No media images found on the page")
-            except (StaleElementReferenceException, WebDriverException) as e:
-                time.sleep(attempt + 0.5)  # Wait before retrying
-                logging.error(f"Attempt {str(attempt + 1)}: Error with {url} - {str(e)}")
-            except Exception as e:
-                if attempt == max_attempts - 1:
-                    logging.error(f"General error processing URL {url}: {str(e)}")
+        except Exception as e:
+            logging.error(f"General error processing URL {url}: {str(e)}")
         return None
     
     def initialize_webdrivers(self):
@@ -519,15 +508,15 @@ class GPTTwitter:
         results = [None] * len(links)
         link_driver_pairs = zip(links, cycle(self.drivers))  # cycle drivers if more links than drivers
 
-        # Uses ThreadPoolExecutor to manage concurrent WebDriver usage
+        # Uses ThreadPoolExecutor for concurrent WebDriver usage
         with ThreadPoolExecutor(max_workers=1) as executor:
             future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
             for future in as_completed(future_to_link):
                 idx = future_to_link[future]
                 try:
                     result = future.result()
-                    results[idx] = result  # Place result in the corresponding position
-                    if debug_mode:
+                    results[idx] = result
+                    if debug_level > 0:
                         if result:
                             logging.info(f"Image found for link index {str(idx)}: {result}")
                         else:
@@ -549,7 +538,8 @@ class GPTTwitter:
             
             urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
             if urls_to_fetch:
-                logging.info(f"Fetching images for {str(len(urls_to_fetch))} URLs.")
+                if debug_level > 0:
+                    logging.info(f"Fetching images for {str(len(urls_to_fetch))} URLs.")
                 image_urls = self.fetch_images_concurrently(urls_to_fetch)
                 for idx, img_url in enumerate(image_urls):
                     if img_url:
@@ -567,7 +557,7 @@ class GPTTwitter:
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
                 lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
             
-            if debug_mode:
+            if debug_level > 1:
                 for i, row in self.heisenberg_tweets.iterrows():
                     logging.info('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']) + '\n==============')
             self.heisenberg_tweets = self.heisenberg_tweets.copy()

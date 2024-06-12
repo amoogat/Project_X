@@ -10,7 +10,7 @@ from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
-from datetime import datetime
+from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -42,6 +42,19 @@ def return_open_close(message):
     cleaned_message = message.replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','')
     if len(cleaned_message.split()) > 1:
         return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
+    
+def ensure_timezone(dt, tz):
+    # Ensure datetime is timezone-aware
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        dt = dt.tz_localize(tz)
+    else:
+        dt = dt.tz_convert(tz)
+    return dt
+
+def round_to_nearest_minute(dt):
+    if dt.second >= 30:
+        dt += timedelta(minutes=1)
+    return dt.replace(second=0, microsecond=0)
 
 @csrf_exempt
 @api_view(['POST'])
@@ -64,7 +77,7 @@ def upload_file(request):
         except Exception as e:
             logging.error(str(e))
         finally:
-            twitter_processor.close_drivers()
+            try_close_drivers(twitter_processor)
 
         if twitter_processor.heisenberg_tweets.empty:
             return Response({'status': 'error', 'message': 'Unable to fetch tweets or no tweets found.'}, status=404)
@@ -141,8 +154,8 @@ def upload_file(request):
         portfolio_backtester = Backtester()
         first_bought_at = best_results_sorted_by_date['created_at'].min()
         last_sold_at = best_results_sorted_by_date['sold_at_date'].max()
-        first_bought_at = pd.to_datetime(first_bought_at).tz_localize(tz) if first_bought_at.tzinfo is None else pd.to_datetime(first_bought_at).tz_convert(tz)
-        last_sold_at = pd.to_datetime(last_sold_at).tz_localize(tz) if last_sold_at.tzinfo is None else pd.to_datetime(last_sold_at).tz_convert(tz)
+        first_bought_at = round_to_nearest_minute(ensure_timezone(first_bought_at, tz))
+        last_sold_at = round_to_nearest_minute(ensure_timezone(last_sold_at, tz))
 
         portfolio_backtester.set_first_bought_at(first_bought_at)
         portfolio_backtester.set_last_sold_at(last_sold_at)
@@ -152,8 +165,8 @@ def upload_file(request):
         market_data_cache = {}
         for result in best_results_sorted_by_date.itertuples():
             ticker = result.ticker
-            start_date = pd.to_datetime(result.created_at).tz_localize(tz) if result.created_at.tzinfo is None else pd.to_datetime(result.created_at).tz_convert(tz)
-            end_date = pd.to_datetime(result.sold_at_date).tz_localize(tz) if result.sold_at_date.tzinfo is None else pd.to_datetime(result.sold_at_date).tz_convert(tz)
+            start_date = round_to_nearest_minute(ensure_timezone(result.created_at, tz))
+            end_date = round_to_nearest_minute(ensure_timezone(result.sold_at_date, tz))
             logging.info(f"Processing trade for {ticker} from {start_date} to {end_date}")
             cache_key = f"{ticker}_{start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}"
             if cache_key not in market_data_cache:
@@ -200,15 +213,21 @@ def upload_file(request):
             else:
                 logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
+        try_close_drivers(twitter_processor)
         return Response({'status': 'success', 'data': results_list, 'portfolio_chart_data': portfolio_chart_data}, status=201)
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
         return Response({'status': 'error', 'message': 'An internal error occurred.'})
     finally:
-        try:
-            twitter_processor.close_drivers()
-        except Exception as e:
-            logging.error(str(e))
+        try_close_drivers(twitter_processor)
+
+def try_close_drivers(twitter_processor):
+    try:
+        twitter_processor.close_drivers()
+    except Exception as e:
+        logging.error(str(e))
+
+@api_view(['GET'])
 
 @api_view(['GET'])
 def results_view(request):
