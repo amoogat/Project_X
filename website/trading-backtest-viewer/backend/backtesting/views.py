@@ -13,9 +13,12 @@ from django.http import JsonResponse
 from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pandas.tseries.holiday import USFederalHolidayCalendar
+from pandas.tseries.offsets import CustomBusinessDay
 
 debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
 
 def return_stock(message):
     # Gets ticker name from message
@@ -132,8 +135,8 @@ def upload_file(request):
         """
         user_prompt = "Is this tweet referring to the opening or closing of a stock position? If it is, please also list the corresponding ticker and whether it is long or short. If it is not referring to the opening or closing of a position, simply put neither. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
         
+        # Dynamically prompt openAI and retrieve stock trades synthesis
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
-        
         df = twitter_processor.heisenberg_tweets.copy()
         df['ticker'] = df['result'].apply(return_stock)
         df['buy'] = df['result'].apply(return_open_close)
@@ -143,7 +146,7 @@ def upload_file(request):
         # Optimizes strategy so we can backtest username
         results = parallel_optimize_strategy(df, param_ranges)
         best_results = results.loc[results.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
-        best_results = best_results.sort_values(by='final_equity', ascending=False)
+        best_results = best_results.sort_values(by='total_return', ascending=False)
         results_list = best_results.to_dict('records')
         default_strategy_id = get_default_strategy()
         best_results_sorted_by_date = best_results.sort_values(by='created_at')
@@ -194,12 +197,9 @@ def upload_file(request):
                 'created_at': result.get('created_at'),
                 'atr_multiplier': result.get('atr_multiplier', 0.0),
                 'atr_period': result.get('atr_period', 0),
-                'total_return': result.get('total_return', 0.0),
                 'portfolio_variance': result.get('portfolio_variance', 0.0),
                 'sharpe_ratio': result.get('sharpe_ratio', 0.0),
-                'final_equity': result.get('final_equity', 0.0),
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
-                'successful_trades': result.get('successful_trades', 0),
                 'minutes_taken': result.get('minutes_taken', 0),
                 'sold_at_date':result.get('sold_at_date'),
                 'score': result.get('score', 0.0)

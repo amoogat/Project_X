@@ -68,9 +68,8 @@ class MarketEnvironment:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
 
     def fetch_market_data(self, ticker, signal_date):
-        # If no timezone info, or UTC detected, sets to NYC; Ensures date is in trading hours
+        # Splits up data and attempts to download from YFINANCE 
         signal_date = self.adjust_to_trading_hours(signal_date)
-        
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
         end_date_utc = (signal_date + timedelta(days=6)).astimezone(pytz.utc)
         attempts, wait = 7, 0.1
@@ -105,85 +104,45 @@ class MarketEnvironment:
         return np.max(ranges, axis=1).rolling(window=period).mean()
 
 class Backtester:
-    def __init__(self, initial_capital=10000):
-        self.initial_capital = initial_capital
+    def __init__(self):
         self.market_env = MarketEnvironment()
         self.first_bought_at = None
         self.last_sold_at = None
         self.portfolio = pd.DataFrame()
 
     def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, atr_period):
-        # Gets a continuous profit_losses list to evaluate callout based on price data that follows
+        # Gets continuous P/L list to evaluate callout based on consequent price data
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
-        profit_losses = ((data_for_backtest['Close'] - callout_price) / callout_price * 100).tolist()
+        profit_losses = ((data_for_backtest['Close'] - callout_price) / callout_price).tolist()
         dates = data_for_backtest.index.tolist()
         return self.evaluate_trades(profit_losses, atr, dates)
 
     def evaluate_trades(self, profit_losses, atr, dates):
         # Backtests profit loss for an individual trade
-        portfolio = {
-            'Capital': self.initial_capital,
-            'Cash': self.initial_capital,
-            'Equity': 0,
-            'Returns': [],
-            'Drawdowns': [],
-            'Successful Trades': 0
-        }
-        initial_investment = portfolio['Cash']
-        portfolio['Cash'] -= initial_investment
-        portfolio['Equity'] = initial_investment
-        max_profit_loss = 0
-        minutes_taken = 0
+        max_profit_loss, max_drawdown, minutes_taken = 0, 0, 0
         sold_at_date = None
-        
         for i, (profit_loss, date) in enumerate(zip(profit_losses, dates)):
             if profit_loss > max_profit_loss:
                 max_profit_loss = profit_loss
+            if profit_loss < max_drawdown:
+                max_drawdown = profit_loss
             if profit_loss < max_profit_loss - (atr) or i == len(profit_losses) - 1:
-                sell_amount = portfolio['Equity']
-                drawdown = ((1 + max_profit_loss / 100) / (1 + profit_loss / 100)) - 1
-                portfolio['Drawdowns'].append(drawdown)
-                portfolio['Cash'] += sell_amount * (1 + profit_loss / 100)
-                portfolio['Equity'] -= sell_amount
-                portfolio['Returns'].append(profit_loss / 100)
+                total_return = profit_loss * 100
                 minutes_taken = i
                 sold_at_date = date
-                if profit_loss > 1 and drawdown < 0.005:
-                    portfolio['Successful Trades'] += 1
                 break
             
         # Calculate variance, max drawdown and sharpe ratio for future analyses
-        total_return = (portfolio['Cash'] - self.initial_capital) / self.initial_capital
-        portfolio_variance = np.var(portfolio['Returns']) if portfolio['Returns'] else 0
+        portfolio_variance = np.var(pd.Series(profit_losses)) if profit_losses else 0
         sharpe_ratio = total_return / np.sqrt(portfolio_variance) if portfolio_variance else 0
-        max_drawdown = max(portfolio['Drawdowns']) if portfolio['Drawdowns'] else 0
-        avg_trade_gain = np.mean(portfolio['Returns']) if portfolio['Returns'] else 0
         return {
-            'Total Return': total_return * 100,
+            'Total Return' : total_return,
             'Portfolio Variance': portfolio_variance,
             'Sharpe Ratio': sharpe_ratio,
-            'Final Equity': portfolio['Cash'],
             'Maximum Drawdown': max_drawdown,
-            'Average Trade Gain': avg_trade_gain,
-            'Successful Trades': portfolio['Successful Trades'],
             'Minutes Taken': minutes_taken,
             'Sold At Date': sold_at_date
         }
-        
-    def adjust_to_trading_hours(self, dt):
-        if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-            dt = pytz.timezone('America/New_York').localize(dt)
-        if dt.weekday() >= 5:
-            dt += timedelta(days=(7 - dt.weekday()))
-            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        elif dt.hour < 9 or (dt.hour == 9 and dt.minute < 30): 
-            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        elif dt.hour >= 16:
-            dt += timedelta(days=1)
-            while dt.weekday() >= 5:
-                dt += timedelta(days=1)
-            dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        return dt
     
     def set_first_bought_at(self, date):
         self.first_bought_at = date
@@ -228,17 +187,16 @@ class Backtester:
             exit_date = trade['exit_date']
             
             # Adjust dates to within trading hours - skips ahead if not
-            entry_date = self.adjust_to_trading_hours(entry_date)
-            exit_date = self.adjust_to_trading_hours(exit_date)
+            entry_date = self.market_env.adjust_to_trading_hours(entry_date)
+            exit_date = self.market_env.adjust_to_trading_hours(exit_date)
             
             # Checks if entry and exit dates are present in the data
-            if entry_date not in data.index or exit_date not in data.index:
-                logging.error(f"Timestamp {entry_date if entry_date not in data.index else exit_date} is missing in the data index.")
-                continue  
-
-            # Adjusts entry and exit dates to nearest available minute
-            entry_date = entry_date if entry_date in data.index else data.index.asof(entry_date)
-            exit_date = exit_date if exit_date in data.index else data.index.asof(exit_date)
+            if entry_date not in data.index:
+                logging.info('Adjusting entry dt index that was out of range.')
+                entry_date = data.index[0]
+            if exit_date not in data.index:
+                logging.info('Adjusting exit dt index that was out of range.')
+                exit_date = data.index[-1]
 
             entry_price = data.at[entry_date]
             exit_price = data.at[exit_date]
@@ -282,20 +240,22 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
     for atr_mult, atr_period in itertools.product(param_ranges['atr_multiplier'], param_ranges['atr_periods']):
         result = backtester.run_backtest(data_for_atr, data_for_backtest, callout_price, atr_mult, atr_period)
         if result:
+            tr = result['Total Return']
+            md = result['Maximum Drawdown']
+            mt = result['Minutes Taken']
+            sr =  result['Sharpe Ratio']
             results.append({
                 'ticker': ticker,
                 'created_at': created_at,
                 'atr_multiplier': atr_mult,
                 'atr_period': atr_period,
-                'total_return': result['Total Return'],
+                'total_return': tr,
                 'portfolio_variance': result['Portfolio Variance'],
-                'sharpe_ratio': result['Sharpe Ratio'],
-                'final_equity': result['Final Equity'],
-                'maximum_drawdown': result['Maximum Drawdown'],
-                'successful_trades': result['Successful Trades'],
-                'minutes_taken': result['Minutes Taken'],
+                'sharpe_ratio': sr,
+                'maximum_drawdown': md,
+                'minutes_taken': mt,
                 'sold_at_date' : result['Sold At Date'],
-                'score': (result['Total Return'] - result['Maximum Drawdown']) / (result['Minutes Taken'] + 0.0001) * 6000
+                'score': (tr + md + sr) / (mt + 0.0001) * 6000
             })
 
     return results
