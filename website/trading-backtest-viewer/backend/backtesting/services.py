@@ -103,6 +103,7 @@ class MarketEnvironment:
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         return np.max(ranges, axis=1).rolling(window=period).mean()
 
+
 class Backtester:
     def __init__(self):
         self.market_env = MarketEnvironment()
@@ -279,6 +280,7 @@ def parallel_optimize_strategy(df, param_ranges):
             if result:
                 results.extend(result)
     return pd.DataFrame(results)
+
 
 class GPTTwitter:
     def __init__(self, username):

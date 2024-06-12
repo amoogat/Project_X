@@ -13,12 +13,9 @@ from django.http import JsonResponse
 from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pandas.tseries.holiday import USFederalHolidayCalendar
-from pandas.tseries.offsets import CustomBusinessDay
 
 debug_mode = True
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
 
 def return_stock(message):
     # Gets ticker name from message
