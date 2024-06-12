@@ -14,7 +14,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from.models import StockData
 import httpx
 import asyncio
-from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
 if config_path not in sys.path:
@@ -113,14 +112,14 @@ class Backtester:
         self.last_sold_at = None
         self.portfolio = pd.DataFrame()
 
-    def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, trailing_stop_multiplier, atr_period):
+    def run_backtest(self, data_for_atr, data_for_backtest, callout_price, atr_multiplier, atr_period):
         # Gets a continuous profit_losses list to evaluate callout based on price data that follows
         atr = self.market_env.calculate_atr(data_for_atr, atr_period).iloc[-1] * atr_multiplier
         profit_losses = ((data_for_backtest['Close'] - callout_price) / callout_price * 100).tolist()
         dates = data_for_backtest.index.tolist()
-        return self.evaluate_trades(profit_losses, atr, trailing_stop_multiplier, dates)
+        return self.evaluate_trades(profit_losses, atr, dates)
 
-    def evaluate_trades(self, profit_losses, atr, trailing_stop_multiplier, dates):
+    def evaluate_trades(self, profit_losses, atr, dates):
         # Backtests profit loss for an individual trade
         portfolio = {
             'Capital': self.initial_capital,
@@ -140,7 +139,7 @@ class Backtester:
         for i, (profit_loss, date) in enumerate(zip(profit_losses, dates)):
             if profit_loss > max_profit_loss:
                 max_profit_loss = profit_loss
-            if profit_loss < max_profit_loss - (atr * trailing_stop_multiplier) or i == len(profit_losses) - 1:
+            if profit_loss < max_profit_loss - (atr) or i == len(profit_losses) - 1:
                 sell_amount = portfolio['Equity']
                 drawdown = ((1 + max_profit_loss / 100) / (1 + profit_loss / 100)) - 1
                 portfolio['Drawdowns'].append(drawdown)
@@ -152,6 +151,7 @@ class Backtester:
                 if profit_loss > 1 and drawdown < 0.005:
                     portfolio['Successful Trades'] += 1
                 break
+            
         # Calculate variance, max drawdown and sharpe ratio for future analyses
         total_return = (portfolio['Cash'] - self.initial_capital) / self.initial_capital
         portfolio_variance = np.var(portfolio['Returns']) if portfolio['Returns'] else 0
@@ -173,14 +173,14 @@ class Backtester:
     def adjust_to_trading_hours(self, dt):
         if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
             dt = pytz.timezone('America/New_York').localize(dt)
-        if dt.weekday() >= 5:  # If it's Saturday or Sunday, move to next Monday 9:30 AM
+        if dt.weekday() >= 5:
             dt += timedelta(days=(7 - dt.weekday()))
             dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        elif dt.hour < 9 or (dt.hour == 9 and dt.minute < 30):  # If before market opens, move to 9:30 AM same day
+        elif dt.hour < 9 or (dt.hour == 9 and dt.minute < 30): 
             dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        elif dt.hour >= 16:  # If after market closes, move to 9:30 AM next trading day
+        elif dt.hour >= 16:
             dt += timedelta(days=1)
-            while dt.weekday() >= 5:  # Skip weekends
+            while dt.weekday() >= 5:
                 dt += timedelta(days=1)
             dt = dt.replace(hour=9, minute=30, second=0, microsecond=0)
         return dt
@@ -279,14 +279,13 @@ class Backtester:
 def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callout_price, param_ranges, backtester):
     # Loops through around 150 parameter combinations to find an arbitrary "good" exit point
     results = []
-    for atr_mult, stop_mult, atr_period in itertools.product(param_ranges['atr_multiplier'], param_ranges['trailing_stop_loss_multiplier'], param_ranges['atr_periods']):
-        result = backtester.run_backtest(data_for_atr, data_for_backtest, callout_price, atr_mult, stop_mult, atr_period)
+    for atr_mult, atr_period in itertools.product(param_ranges['atr_multiplier'], param_ranges['atr_periods']):
+        result = backtester.run_backtest(data_for_atr, data_for_backtest, callout_price, atr_mult, atr_period)
         if result:
             results.append({
                 'ticker': ticker,
                 'created_at': created_at,
                 'atr_multiplier': atr_mult,
-                'trailing_stop_multiplier': stop_mult,
                 'atr_period': atr_period,
                 'total_return': result['Total Return'],
                 'portfolio_variance': result['Portfolio Variance'],
@@ -310,7 +309,7 @@ def process_row(row,backtester,param_ranges):
         return []
     
 def parallel_optimize_strategy(df, param_ranges):
-    # Optimizes a strategy using ATR and Trailing Stop asynchronously
+    # Optimizes a strategy using ATR
     backtester = Backtester()
     results = []
     with ThreadPoolExecutor(max_workers=2) as executor:

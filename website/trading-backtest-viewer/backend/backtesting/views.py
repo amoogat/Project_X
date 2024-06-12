@@ -83,8 +83,7 @@ def upload_file(request):
             return Response({'status': 'error', 'message': 'Unable to fetch tweets or no tweets found.'}, status=404)
 
         param_ranges = {
-            'atr_multiplier': np.arange(1, 3.5, 0.5),
-            'trailing_stop_loss_multiplier': np.arange(1, 3.5, 0.5),
+            'atr_multiplier': np.arange(1, 4, 1),
             'atr_periods': [14, 50, 100, 200, 400, 650]
         }
         
@@ -194,7 +193,6 @@ def upload_file(request):
                 'ticker': result.get('ticker', ''),
                 'created_at': result.get('created_at'),
                 'atr_multiplier': result.get('atr_multiplier', 0.0),
-                'trailing_stop_multiplier': result.get('trailing_stop_multiplier', 0.0),
                 'atr_period': result.get('atr_period', 0),
                 'total_return': result.get('total_return', 0.0),
                 'portfolio_variance': result.get('portfolio_variance', 0.0),
