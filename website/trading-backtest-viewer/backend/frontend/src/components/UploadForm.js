@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Line } from 'react-chartjs-2';
 import 'chart.js/auto';
-import { Button, Box, Typography, TextField, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, Collapse, CircularProgress } from '@mui/material';
+import {
+  Button, Box, Typography, TextField, Table, TableBody, TableCell,
+  TableContainer, TableHead, TableRow, Paper, Collapse, CircularProgress
+} from '@mui/material';
 import API from '../api';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -10,15 +13,13 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-const BATCH_SIZE = 1000;
-
-function UploadForm() {
+const UploadForm = () => {
   const [username, setUsername] = useState('');
   const [message, setMessage] = useState('');
   const [results, setResults] = useState([]);
   const [openRow, setOpenRow] = useState(null);
   const [portfolioChartData, setPortfolioChartData] = useState(null);
-  const [loading, setLoading] = useState(false);  // Loading state
+  const [loading, setLoading] = useState(false);
 
   const handleUsernameChange = (e) => setUsername(e.target.value);
 
@@ -27,7 +28,7 @@ function UploadForm() {
       setMessage('Please provide a username.');
       return;
     }
-    setLoading(true);  // Start loading
+    setLoading(true);
     setMessage('');
     setResults([]);
     setPortfolioChartData(null);
@@ -37,21 +38,19 @@ function UploadForm() {
       const response = await API.post('upload/', data);
       setMessage('Processing successful');
       const initialResults = response.data.data || [];
-      setPortfolioChartData(response.data.portfolio_chart_data); // Set the portfolio chart data
+      setPortfolioChartData(response.data.portfolio_chart_data);
 
       const updatedResults = await Promise.all(initialResults.map(async result => {
         try {
           const chartResponse = await API.get(`/api/stockdata/${result.ticker}/`);
           result.chartData = chartResponse.data.chartData;
-          result.createdAtIndex = findNearestIndex(chartResponse.data.chartData.dates, result.created_at);
-          result.saleIndex = findNearestIndex(chartResponse.data.chartData.dates, result.sold_at_date);
-          if (chartResponse.data.chartData) {
-            await handleBatchUpload(result.ticker, chartResponse.data.chartData);
-          }
+          result.createdAtIndex = findNearestIndex(result.chartData.dates, result.created_at);
+          result.saleIndex = findNearestIndex(result.chartData.dates, result.sold_at_date);
+          result.tweet_text = chartResponse.data.tweet_text;
           return result;
         } catch (error) {
           console.error('Error fetching chart data:', error);
-          return null;  // Skip failed results
+          return null; 
         }
       }));
 
@@ -62,7 +61,7 @@ function UploadForm() {
       setMessage('Error processing username');
       console.error('Upload error:', error);
     } finally {
-      setLoading(false);  // End loading
+      setLoading(false);
     }
   };
 
@@ -81,35 +80,6 @@ function UploadForm() {
     });
 
     return nearestIndex;
-  };
-
-  const handleBatchUpload = async (ticker, chartData) => {
-    const stockData = chartData.dates.map((date, index) => ({
-      date: date,
-      close: chartData.prices[index],
-    }));
-  
-    const batches = [];
-    for (let i = 0; i < stockData.length; i += BATCH_SIZE) {
-      const batch = stockData.slice(i, i + BATCH_SIZE);
-      batches.push(batch);
-    }
-  
-    try {
-      await Promise.all(batches.map(batch => 
-        fetch('/api/batch-upload/', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': window.csrfToken // Include the CSRF token in the headers
-          },
-          body: JSON.stringify({ ticker, stock_data: batch })
-        })
-      ));
-      console.log('All batches uploaded successfully');
-    } catch (error) {
-      console.error('Error uploading batches:', error);
-    }
   };
 
   const toggleRow = (index) => {
@@ -212,7 +182,7 @@ function UploadForm() {
                                     borderColor: 'rgb(255, 99, 132)',
                                     backgroundColor: 'rgba(255, 99, 132, 0.5)',
                                     pointRadius: result.chartData.dates.map((date, i) =>
-                                      i === result.createdAtIndex ? 7 : 0
+                                      i === result.createdAtIndex ? 17 : 0
                                     ),
                                     showLine: false,
                                     order: 1,
@@ -225,13 +195,16 @@ function UploadForm() {
                                     borderColor: 'rgb(0, 255, 0)',
                                     backgroundColor: 'rgba(0, 255, 0, 0.5)',
                                     pointRadius: result.chartData.dates.map((date, i) =>
-                                      i === result.saleIndex ? 7 : 0
+                                      i === result.saleIndex ? 17 : 0
                                     ),
                                     showLine: false,
                                     order: 1,
                                   }
                                 ]
                               }} />
+                              <Typography variant="body2" style={{ marginTop: '16px', whiteSpace: 'pre-line' }}>
+                                {result.tweet_text}
+                              </Typography>
                             </>
                           )}
                         </Box>

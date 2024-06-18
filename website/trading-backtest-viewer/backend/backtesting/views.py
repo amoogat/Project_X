@@ -12,9 +12,8 @@ from django.shortcuts import render, redirect
 from django.http import JsonResponse
 from datetime import datetime, timedelta
 from django.utils.decorators import method_decorator
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-debug_mode = True
+debug_level = 0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def return_stock(message):
@@ -64,12 +63,14 @@ def upload_file(request):
         if not username:
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
         # Checks if the username already has data in the database - skips process in production
-        if not debug_mode:
-            existing_results = BacktestResult.objects.filter(username=username).distinct('ticker', 'created_at')
+        if debug_level < 2:
+            existing_results = BacktestResult.objects.filter(username=username).order_by('ticker', 'created_at').distinct('ticker', 'created_at')
             if existing_results.exists():
                 # Serialize and return the existing results
                 serializer = BacktestResultSerializer(existing_results, many=True)
-                return Response({'status': 'success', 'data': serializer.data}, status=200)
+                portfolio_chart_data = existing_results.first().portfolio_chart_data
+                serializer.data[0].pop('portfolio_chart_data', None)
+                return Response({'status': 'success', 'data': serializer.data, 'portfolio_chart_data': portfolio_chart_data}, status=200)
 
         twitter_processor = GPTTwitter(username)
         try:
@@ -166,7 +167,8 @@ def upload_file(request):
             ticker = result.ticker
             start_date = round_to_nearest_minute(ensure_timezone(result.created_at, tz))
             end_date = round_to_nearest_minute(ensure_timezone(result.sold_at_date, tz))
-            logging.info(f"Processing trade for {ticker} from {start_date} to {end_date}")
+            if debug_level > 0:
+                logging.info(f"Processing trade for {ticker} from {start_date} to {end_date}")
             cache_key = f"{ticker}_{start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}"
             if cache_key not in market_data_cache:
                 market_data = portfolio_backtester.fetch_market_data(ticker, start_date, end_date)
@@ -185,7 +187,8 @@ def upload_file(request):
         portfolio_chart_data = { 'dates': portfolio_df['date'].astype(str).tolist(),
                                 'values': portfolio_df['value'].tolist() }
         
-        # Individual trades serialized for chart view
+         # Individual trades serialized for chart view
+        first_result_saved = False
         for result in results_list:
             result_data = {
                 'username': username, 
@@ -194,14 +197,17 @@ def upload_file(request):
                 'created_at': result.get('created_at'),
                 'atr_multiplier': result.get('atr_multiplier', 0.0),
                 'atr_period': result.get('atr_period', 0),
+                'total_return':  result.get('total_return',0),
                 'portfolio_variance': result.get('portfolio_variance', 0.0),
                 'sharpe_ratio': result.get('sharpe_ratio', 0.0),
                 'maximum_drawdown': result.get('maximum_drawdown', 0.0),
                 'minutes_taken': result.get('minutes_taken', 0),
                 'sold_at_date':result.get('sold_at_date'),
                 'score': result.get('score', 0.0)
-            }
-
+                }
+            if not first_result_saved:
+                result_data.update({'portfolio_chart_data': portfolio_chart_data})
+                first_result_saved = True
             serializer = BacktestResultSerializer(data=result_data)
             if serializer.is_valid():
                 serializer.save()
@@ -214,15 +220,14 @@ def upload_file(request):
         logging.error(f"An error occurred: {str(e)}")
         return Response({'status': 'error', 'message': 'An internal error occurred.'})
     finally:
-        try_close_drivers(twitter_processor)
+        if debug_level > 0:
+            try_close_drivers(twitter_processor)
 
 def try_close_drivers(twitter_processor):
     try:
         twitter_processor.close_drivers()
     except Exception as e:
         logging.error(str(e))
-
-@api_view(['GET'])
 
 @api_view(['GET'])
 def results_view(request):
@@ -240,18 +245,21 @@ def upload_form_view(request):
 class StockDataView(APIView):
     # Will display chart on click for individual stock plays
     def get(self, request, ticker):
-        if debug_mode:
+        if debug_level > 0:
             logging.info(f"Received request for ticker: {ticker}")
 
         stock_data = StockData.objects.filter(ticker=ticker).order_by('date')
-        dates = [data.date for data in stock_data]
-        prices = [float(data.close) for data in stock_data]
-
+        dates, prices = [], []
+        for data in stock_data:
+            dates.append(data.date)
+            prices.append(float(data.close))
+        tweet_text = stock_data[0].tweet_text.replace('\\n','\n').replace('\n',' ')
         response_data = {
             'ticker': ticker,
+            'tweet_text': tweet_text,
             'chartData': {
                 'dates': dates,
-                'prices': prices,
+                'prices': prices
             }
         }
         return JsonResponse(response_data)
@@ -264,53 +272,3 @@ def parse_date(date_str):
     if not date.tzinfo:
         date = pytz.UTC.localize(date)
     return date.astimezone(pytz.timezone('America/New_York'))
-
-def save_batch(batch, ticker):
-    # Saves the batch of stock data if it doesnt already exist in our database
-    try:
-        bulk_list = []
-        existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
-        for entry in batch:
-            date = parse_date(entry.get('date'))
-            if date not in existing_dates:
-                bulk_list.append(
-                    StockData(
-                        ticker=ticker,
-                        date=date,
-                        close=entry.get('close', 0.0)
-                    )
-                )
-        if bulk_list:
-            StockData.objects.bulk_create(bulk_list, ignore_conflicts=True)
-        else:
-            logging.info(str(ticker) + ' on ' + str(date) + ' has already been processed.')
-        return True
-    except Exception as e:
-        logging.error(f"Failed to save batch stock data: {str(e)}")
-        return False
-
-@csrf_exempt
-def batch_upload(request):
-    # Uploads the chart data in batches - enhances speed
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            ticker = data.get('ticker')
-            stock_data = data.get('stock_data')
-
-            BATCH_SIZE = 1000  # Define the batch size as per server reqs
-            batches = [stock_data[i:i + BATCH_SIZE] for i in range(0, len(stock_data), BATCH_SIZE)]
-
-            with ThreadPoolExecutor(max_workers=2) as executor:  
-                futures = [executor.submit(save_batch, batch, ticker) for batch in batches]
-                results = [future.result() for future in as_completed(futures)]
-
-            if all(results):
-                return JsonResponse({'status': 'success', 'message': 'Batch upload successful'}, status=201)
-            else:
-                return JsonResponse({'status': 'error', 'message': 'Some batches failed to upload'}, status=500)
-        except Exception as e:
-            logging.error(f"Failed to process batch upload request: {str(e)}")
-            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
-
-    return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)

@@ -40,7 +40,7 @@ class MarketEnvironment:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
     
-    def save_stock_data(self, ticker, data):
+    def save_stock_data(self, ticker, data, tweet_text):
         try:
             # Saves stock data if not already in our database
             existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
@@ -56,6 +56,7 @@ class MarketEnvironment:
                             ticker=ticker,
                             date=index,
                             close=row['Close'],
+                            tweet_text=tweet_text
                         )
                     )
             if bulk_list:
@@ -67,7 +68,7 @@ class MarketEnvironment:
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
 
-    def fetch_market_data(self, ticker, signal_date):
+    def fetch_market_data(self, ticker, signal_date, tweet_text):
         # Splits up data and attempts to download from YFINANCE 
         signal_date = self.adjust_to_trading_hours(signal_date)
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
@@ -81,7 +82,7 @@ class MarketEnvironment:
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
                 data = data[(data.index <= end_date_utc)]
                 # Saves stock data, splits data into backtest and ATR calculation (6:1 ratio)
-                self.save_stock_data(ticker, data)
+                self.save_stock_data(ticker, data, tweet_text)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']
                 data_for_atr = data.loc[:data.index[self.closest_time_index + 1]]
@@ -258,12 +259,11 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
                 'sold_at_date' : result['Sold At Date'],
                 'score': (tr + md + sr) / (mt + 0.0001) * 6000
             })
-
     return results
 
 def process_row(row,backtester,param_ranges):
     # Fetches market data for a ticker starting from a callout date, optimizes strategy
-    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']))
+    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']), row['text'])
     if data_for_atr is not None and data_for_backtest is not None:
         return optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
     else:

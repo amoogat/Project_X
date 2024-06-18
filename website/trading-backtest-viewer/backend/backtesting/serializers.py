@@ -12,6 +12,8 @@ class StrategySerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class BacktestResultSerializer(serializers.ModelSerializer):
+    portfolio_chart_data = serializers.JSONField(required=False)
+
     class Meta:
         model = BacktestResult
         fields = '__all__'

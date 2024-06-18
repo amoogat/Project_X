@@ -14,13 +14,13 @@ class StockData(models.Model):
     ticker = models.CharField(max_length=10,default=' ')
     date = models.DateTimeField(default=datetime.now,blank=True)
     close = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
-
+    tweet_text = models.TextField(default = ' ')
     def __str__(self):
         return f"{self.ticker} data on {self.date.strftime('%Y-%m-%d')}"
 
 
 class BacktestResult(models.Model):
-    username = models.CharField(max_length=100, default='')  # Add this line
+    username = models.CharField(max_length=100, default='')
     strategy = models.ForeignKey(Strategy, on_delete=models.CASCADE, related_name='backtest_results', null=True)
     ticker = models.CharField(max_length=10, default=' ')
     created_at = models.DateTimeField(default=datetime.now, blank=True)
@@ -34,6 +34,7 @@ class BacktestResult(models.Model):
     minutes_taken = models.IntegerField(default=0)
     sold_at_date = models.DateTimeField(default=datetime.now(),blank=True)
     score = models.FloatField(default=0.0)
+    portfolio_chart_data = models.JSONField(default=dict)
 
     def __str__(self):
         return f"{self.ticker} on {self.created_at.strftime('%Y-%m-%d')}"
