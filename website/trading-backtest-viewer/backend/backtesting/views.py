@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-import logging, pytz, json
+import logging, pytz
 import pandas as pd
 import numpy as np
 from .models import BacktestResult, get_default_strategy, StockData
@@ -10,7 +10,7 @@ from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
-from datetime import datetime, timedelta
+from datetime import timedelta
 from django.utils.decorators import method_decorator
 
 debug_level = 0
@@ -263,12 +263,3 @@ class StockDataView(APIView):
             }
         }
         return JsonResponse(response_data)
-
-def parse_date(date_str):
-    try:
-        date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-    except ValueError:
-        date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S%z")
-    if not date.tzinfo:
-        date = pytz.UTC.localize(date)
-    return date.astimezone(pytz.timezone('America/New_York'))
