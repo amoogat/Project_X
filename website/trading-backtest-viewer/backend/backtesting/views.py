@@ -241,7 +241,7 @@ class StockDataView(APIView):
         for data in stock_data:
             dates.append(data.date)
             prices.append(float(data.close))
-            tweet_text = data.tweet_text.decode('utf-8') if isinstance(data.tweet_text, bytes) else data.tweet_text
+            tweet_text = data.tweet_text
         response_data = {
             'ticker': ticker,
             'tweet_text': tweet_text.replace('\\n', '\n').replace('\n', ' '),

@@ -427,8 +427,7 @@ class GPTTwitter:
             
             # Combine text and transcribed image data into a full response
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
-                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1
-            )
+                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
 
             if debug_level > 1:
                 for i, row in self.heisenberg_tweets.iterrows():
