@@ -4,10 +4,17 @@ import UploadForm from './components/UploadForm';
 import { AppBar, Toolbar, Typography, Button, Container } from '@mui/material';
 import theme from './theme'; // Import the theme
 import { ThemeProvider } from '@mui/material/styles';
-
+import { CssBaseline, GlobalStyles } from '@mui/material';
 function App() {
   return (
     <ThemeProvider theme={theme}>
+      <CssBaseline /> {/* This resets padding and margins and applies background.default to the body */}
+        <GlobalStyles
+          styles={{
+            body: { backgroundColor: theme.palette.background.default },
+            '#root': { height: '100vh', backgroundColor: theme.palette.background.default }
+          }}
+        />
         <Router>
         <div>
             <AppBar position="static">
@@ -19,7 +26,7 @@ function App() {
                 <Button color="inherit" component={Link} to="/results">Results</Button>
             </Toolbar>
             </AppBar>
-            <Container>
+            <Container style={{ backgroundColor: '#1a42c', color: 'white' }}>
             <Routes>
                 <Route path="/upload" element={<UploadForm />} />
                 <Route path="/results" element={<div>Results Page</div>} /> {/* Placeholder for Results page */}

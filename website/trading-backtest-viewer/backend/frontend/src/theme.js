@@ -2,50 +2,31 @@ import { createTheme } from '@mui/material/styles';
 
 const theme = createTheme({
   palette: {
-    mode: 'dark',
+    background: {
+      default: '#303030',  // Darker background for a modern look
+      paper: '#424242',    // Mid grey for components
+    },
     primary: {
-      main: '#29b6f6', // A light blue shade
+      main: '#90caf9',     // Light blue for primary actions
     },
     secondary: {
-      main: '#ffee58', // A yellow shade for highlighting important buttons or information
-    },
-    background: {
-      default: '#102027', // A deep blue-grey
-      paper: '#37474f',
+      main: '#c4afj1',     // Soft pink for secondary actions
     },
     text: {
-      primary: '#eceff1', // Off-white text for readability on dark backgrounds
-      secondary: '#cfd8dc',
-    },
+      primary: '#ffffff',  // White text for high contrast
+      secondary: '#eeeeee' // Light grey for less important text
+    }
   },
   typography: {
-    fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
+    fontFamily: 'Roboto, sans-serif',
     h5: {
-      fontWeight: 600,
-      fontSize: '1.4rem',
-      color: '#ffffff',
+      color: '#90caf9',   // Use primary color for headers
+      fontWeight: 'bold'
     },
-    button: {
-      textTransform: 'none', // Buttons with normal case text
-      fontWeight: 500,
-    },
-  },
-  components: {
-    MuiAppBar: {
-      styleOverrides: {
-        colorPrimary: {
-          backgroundColor: '#263238', // Darker shade for the AppBar
-        },
-      },
-    },
-    MuiButton: {
-      styleOverrides: {
-        containedPrimary: {
-          color: 'white', // Ensuring text on primary buttons is always white
-        },
-      },
-    },
-  },
+    body2: {
+      color: '#eeeeee',   // Light grey for secondary text
+    }
+  }
 });
 
 export default theme;
