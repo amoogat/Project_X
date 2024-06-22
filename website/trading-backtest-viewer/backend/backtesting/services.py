@@ -20,7 +20,7 @@ if config_path not in sys.path:
     sys.path.append(config_path)
 import big_baller_moves
 
-debug_level = 1
+debug_level = 0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MarketEnvironment:
@@ -294,18 +294,10 @@ class GPTTwitter:
         )
         self.api = tweepy.API(self.auth)
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
-        self.node_urls = [
-            "http://localhost:5555/wd/hub",  # url for first chrome node
-            "http://localhost:5556/wd/hub"   # url for second chrome node
-        ]
         self.user_id = self.get_user_id()
-        self.tweets = self.get_tweets()
-        self.df = pd.DataFrame(self.tweets.data)
-        self.df["text"] = [(str(i).replace(",", "").replace('$', '').replace('\\', '').replace('*','')) for i in self.df["text"]]
-        self.heisenberg_tweets = pd.DataFrame()
         self.heisenberg_tweets = pd.DataFrame()
         self.drivers = []
-        
+
     def get_user_id(self):
         # Needed for tweepy :)
         try:
@@ -317,51 +309,6 @@ class GPTTwitter:
             logging.error("Error:" + str(e))
             return None
 
-    def get_tweets(self):
-        # Uses tweepy for fetching tweets with relevant fields
-        return self.client.get_users_tweets(
-            id = self.user_id,
-            max_results = 25,  # Number of tweets to retrieve (can adjust as needed)
-            tweet_fields = ['id', 'text', 'created_at', 'entities', 'attachments'],
-            media_fields = ['preview_image_url', 'url'],
-            exclude = ['retweets', 'replies'],
-            expansions = ['attachments.media_keys', 'author_id']
-        )
-
-    def get_display_url(self, entities):
-        if isinstance(entities, dict) and "urls" in entities:
-            urls = entities["urls"]
-            display_urls = [url.get("display_url") for url in urls]
-            return display_urls
-        else:
-            return 0
-
-    def initialize_webdriver(self):
-        # Initializes the webdriver hub with optimal Selenium settings for scraping
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-dev-tools")
-        options.add_argument('blink-settings=imagesEnabled=false')
-
-        capabilities = options.to_capabilities()
-
-        driver = webdriver.Remote(
-            command_executor="http://localhost:4444/wd/hub",
-            desired_capabilities=capabilities
-        )
-        return driver
-    
-    def close_drivers(self):
-        # Ensures no chrome subprocesses left running
-        for driver in self.drivers:
-            driver.quit()
-        self.drivers = []
-    
     async def get_response_image(self, text):
         # Asynchronously gets the stock purchase information out of an image from OpenAI 4o
         if not text:
@@ -394,7 +341,6 @@ class GPTTwitter:
             else:
                 logging.error(f"Failed to fetch data: {response.text}, Status Code: {str(response.status_code)}")
                 return None
-
 
     async def dynamic_prompting(self, text, sys_prompt, user_prompt):
         # Asynchronously gets [Open/Close] [Ticker] [Long/Short] from tweet + image data
@@ -434,97 +380,61 @@ class GPTTwitter:
     def clean_response(self, response):
         return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
     
-    def get_jpg_url(self, driver, link):
-        try:
-            if isinstance(link, list):  # Extract first element if URL is a list
-                for u in link:
-                    if "twitter" in u:
-                        link = u
-                        break
-            if not link:
-                return None
-            url = f'https://{link}'
-            driver.get(url)
-            # Waits for potential redirects and the page to stabilize
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, 'article')))
-            time.sleep(0.5)
-            images = driver.find_elements(By.TAG_NAME, "img")
-            for img in images:
-                img_src = img.get_attribute('src')
-                if 'media' in img_src and 'twimg' in img_src:
-                    return img_src
-            if debug_level > 0:
-                logging.info("No media images found on the page")
-        except Exception as e:
-            logging.error(f"General error processing URL {url}: {str(e)}")
-        return None
-    
-    def initialize_webdrivers(self):
-        # Clears existing drivers if any, initializes a WebDriver for each node URL
-        self.close_drivers()
-        for node_url in self.node_urls:
-            self.drivers.append(self.initialize_webdriver())
+    def get_tweets(self):
+        # Uses tweepy for fetching tweets with relevant fields
+        tweets_with_media = []
+        media_dict = {}
+        tweet_objects = self.client.get_users_tweets(id=self.user_id, max_results=25,
+                            tweet_fields=['id', 'text', 'created_at', 'attachments'],
+                            media_fields=['url'], expansions=['attachments.media_keys'])
+        if tweet_objects.includes and 'media' in tweet_objects.includes:
+            media_dict = {media.media_key: media.url for media in tweet_objects.includes['media']}
+        for tweet in tweet_objects.data:
+            # Ensuring 'attachments' exists and has 'media_keys'
+            if 'attachments' in tweet.data and 'media_keys' in tweet.data['attachments']:
+                tweet_media_urls = [media_dict[key] for key in tweet.data['attachments']['media_keys']]
+                tweets_with_media.append((tweet, tweet_media_urls))
+            else:
+                tweets_with_media.append((tweet, []))
+        return tweets_with_media
 
-    def fetch_images_concurrently(self, links):
-        results = [None] * len(links)
-        link_driver_pairs = zip(links, cycle(self.drivers))  # cycle drivers if more links than drivers
-
-        # Uses ThreadPoolExecutor for concurrent WebDriver usage
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future_to_link = {executor.submit(self.get_jpg_url, driver, link): idx for idx, (link, driver) in enumerate(link_driver_pairs)}
-            for future in as_completed(future_to_link):
-                idx = future_to_link[future]
-                try:
-                    result = future.result()
-                    results[idx] = result
-                    if debug_level > 0:
-                        if result:
-                            logging.info(f"Image found for link index {str(idx)}: {result}")
-                        else:
-                            logging.info(f"No image found for link index {str(idx)}.")
-                except Exception as e:
-                    logging.info(f"Error processing link at index {idx}: {str(e)}")
-                    results[idx] = None  
-        return results
-    
     def process_tweets(self):
+        self.df = pd.DataFrame([{
+            'id': tweet_data[0].id,
+            'text': tweet_data[0].text,
+            'created_at': tweet_data[0].created_at,
+            'image_urls': tweet_data[1]
+        } for tweet_data in self.get_tweets()])
+
         if not self.df.empty:
-            # Gets jpg url - uses Selenium grid to concurrently scrape
-            self.initialize_webdrivers()
-            self.df["image_url"] = self.df["entities"].apply(self.get_display_url)
-            selected_columns = ['id', 'text', 'created_at', 'image_url']
-            self.heisenberg_tweets = self.df[selected_columns].copy()
+            self.heisenberg_tweets = self.df[['id', 'text', 'created_at', 'image_urls']].copy()
             self.heisenberg_tweets['image_response'] = None
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_convert('America/New_York')
-            
-            urls_to_fetch = [url for url in self.heisenberg_tweets['image_url'] if url is not None]
-            if urls_to_fetch:
-                if debug_level > 0:
-                    logging.info(f"Fetching images for {str(len(urls_to_fetch))} URLs.")
-                image_urls = self.fetch_images_concurrently(urls_to_fetch)
-                for idx, img_url in enumerate(image_urls):
-                    if img_url:
-                        self.heisenberg_tweets.at[idx, 'jpg_url'] = img_url
+            self.heisenberg_tweets['image_urls'] = self.heisenberg_tweets['image_urls'].apply(lambda x: x if x else None)
 
-            # Async runs the OpenAI calls to turn an image -> transcribed image data
-            if self.heisenberg_tweets['jpg_url'].any():
-                non_null_urls = self.heisenberg_tweets['jpg_url'].dropna().tolist()
+            # Filtering non-null URLs for processing
+            non_null_urls = [url for sublist in self.heisenberg_tweets['image_urls'].dropna().tolist() for url in sublist]
+            
+            if non_null_urls:
+                # Runs the OpenAI calls to turn an image -> transcribed image data
                 image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
-                non_null_indices = self.heisenberg_tweets.index[self.heisenberg_tweets['jpg_url'].notnull()].tolist()
-                for idx, content in zip(non_null_indices, image_responses):
-                    if content:
-                        self.heisenberg_tweets.at[idx, 'image_response'] = self.clean_response(content)
-
-            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
-                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
+                response_iterator = iter(image_responses)
+                for idx, urls in self.heisenberg_tweets[self.heisenberg_tweets['image_urls'].notnull()].iterrows():
+                    for url in urls['image_urls']:
+                        content = next(response_iterator, None)
+                        if content:
+                            self.heisenberg_tweets.at[idx, 'image_response'] = (self.heisenberg_tweets.at[idx, 'image_response'] or '') + self.clean_response(content) + ' '
             
+            # Combine text and transcribed image data into a full response
+            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
+                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1
+            )
+
             if debug_level > 1:
                 for i, row in self.heisenberg_tweets.iterrows():
-                    logging.info('response: ' + str(row['full_response']) + '  jpg_url: ' + str(row['image_url']) + '\n==============')
-            self.heisenberg_tweets = self.heisenberg_tweets.copy()
+                    logging.info('response: ' + str(row['full_response']) + '  image_urls: ' + str(row['image_urls']) + '\n==============')
         else:
             logging.error("No data to process. DataFrame is empty.")
-                    
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
         # Async runs openAI calls tweet + transcribed image data -> [open/close] [Ticker] [Long/Close]
         if self.heisenberg_tweets is not None and not self.heisenberg_tweets.empty:

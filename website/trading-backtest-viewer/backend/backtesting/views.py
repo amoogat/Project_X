@@ -77,8 +77,6 @@ def upload_file(request):
             twitter_processor.process_tweets()
         except Exception as e:
             logging.error(str(e))
-        finally:
-            try_close_drivers(twitter_processor)
 
         if twitter_processor.heisenberg_tweets.empty:
             return Response({'status': 'error', 'message': 'Unable to fetch tweets or no tweets found.'}, status=404)
@@ -214,20 +212,10 @@ def upload_file(request):
             else:
                 logging.error(f"Serializer error: {str(serializer.errors)}")
                 return Response(serializer.errors, status=400)
-        try_close_drivers(twitter_processor)
         return Response({'status': 'success', 'data': results_list, 'portfolio_chart_data': portfolio_chart_data}, status=201)
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
         return Response({'status': 'error', 'message': 'An internal error occurred.'})
-    finally:
-        if debug_level > 0:
-            try_close_drivers(twitter_processor)
-
-def try_close_drivers(twitter_processor):
-    try:
-        twitter_processor.close_drivers()
-    except Exception as e:
-        logging.error(str(e))
 
 @api_view(['GET'])
 def results_view(request):
@@ -253,10 +241,10 @@ class StockDataView(APIView):
         for data in stock_data:
             dates.append(data.date)
             prices.append(float(data.close))
-        tweet_text = stock_data[0].tweet_text.replace('\\n','\n').replace('\n',' ')
+            tweet_text = data.tweet_text.decode('utf-8') if isinstance(data.tweet_text, bytes) else data.tweet_text
         response_data = {
             'ticker': ticker,
-            'tweet_text': tweet_text,
+            'tweet_text': tweet_text.replace('\\n', '\n').replace('\n', ' '),
             'chartData': {
                 'dates': dates,
                 'prices': prices
