@@ -13,7 +13,7 @@ from django.http import JsonResponse
 from datetime import timedelta
 from django.utils.decorators import method_decorator
 
-debug_level = 0
+debug_level = 2
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
 def ensure_timezone(dt, tz):
@@ -68,7 +68,7 @@ def upload_file(request):
             'atr_periods': [14, 50, 100, 200, 400, 650]
         }
         
-        sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output. If the text and image description Ticker differ, go with the text, unless there is no ticker mentioned in the text.
+        sys_prompt = """You are parsing tweets to interpret and synthesize information about stock plays. Reference examples as a guide to understand the format of the output.
         Example:
         Text: $PARA Closed\n\nIn 13.11 (yesterday)\n\nOut 13.24\n\n+1%\n+$65 profit\n\nJust trying to reduce long exposure heading into tomorrow. 
         https://t.co/GpCKwDrfky 
@@ -81,13 +81,8 @@ def upload_file(request):
         TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
 
-        Text: \\$GOOG Closed\n\nIn .32 credit (Apr 30th)\n\nOut .05 debit\n\n+\\$135 profit\n\nSmall. Got dangerously close. But never worried. TRANSCRIBED IMAGE DATA: The image describes a vertical options spread for Google (GOOG) stock, specifically a put spread. Here are the details:\n\n- **Type of Spread**: Vertical Put Spread\n- **Underlying Asset**: GOOG (Google)\n- **Expiry Date**: May 3, 2024\n- **Strike Prices**: 165 (bought) and 162.5 (sold)\n\nDetails of the trade:\n- **Quantity**: 5 contracts\n- **Total Cost**: Since you are paying 0.05 per contract for 5 contracts, the total debit is 5 * 0.05 = \\$25.\n\nIn this trade, you are buying 5 put options at a strike price of 165 and selling 5 put options at a strike price of 162.5 for the same expiration date of May 3, 2024. This creates a vertical spread (specifically a bear put spread), aiming to profit from a decrease in the price of the underlying stock, Google, down to or below the lower strike price of 162.5.
-        Correct Output: [Close GOOG Short]
-
         Text: \\$AMD Eyeing this name.\n\nIf it can get to 137-138ish tomorrow or next week, then I would buy there. \n\nWhy? 200dma magnet could act as major support.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
-
-        Text: \\$DIS Open\n\nEarnings play\n\nRisk \\$1,670 to make \\$330.\n\nBmo, implied about a 7pt move. https://t.co/nyMZGS23OZ  TRANSCRIBED IMAGE DATA: The image describes a vertical put spread (also known as a bull put spread). This is a type of options strategy that involves selling one put option and buying another put option at a lower strike price but with the same expiration date.\n\nHere's the breakdown of the trade based on the image:\n\n- This is for the stock with the ticker symbol "DIS" (Walt Disney Company), with options expiring on May 10, 2024.\n- The vertical spread involves the 108 and 106 strike prices, meaning you are dealing with 108/106 put options.\n- The strategy specified is a put vertical spread:\n  - Selling 10 put options at the 108 strike price.\n  - Buying 10 put options at the 106 strike price.\n- The prices for the transactions are:\n  - Sold (shorted) the 108 strike put options at \\$0.86 each.\n  - Bought (long) the 106 strike put options at \\$0.53 each.\n- The net credit received for the spread is \\$0.33 per share (since options typically represent 100 shares, the total net credit is \\$33 per contract).\n\nIn summary, the strategy is a bull put spread where you hope the price of Disney (DIS) stays above the higher strike price (108) by the expiration date so that both options expire worthless, and you keep the credit
 
         Text: Watchlist for next week:\n\nLong: \\$VIX\n\nShort: \\$FXI, \\$SPY\n\nNeutral: \\$NVDA\n\nSpeculative bounce play on watch: \\$SHOP  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
@@ -103,15 +98,8 @@ def upload_file(request):
 
         Text: \\\\$GME selling call spreads on watch.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
-
-        Text: For those who want to play the VIX but cannot because cough Robinhood cough, then I suggest SPY puts. It's pretty much the next best alternative.\\n\\nDon't give me that UVXY crap imo.  TRANSCRIBED IMAGE DATA: None
-        Correct Output: [Neither]
-        response: FXI Open
-
-        Text: FXI Open Would not be surprised we get a decent bounce in the Hang Seng tonight and/or tomorrow night. https://t.co/voe0o6sdyQ TRANSCRIBED IMAGE DATA: The image describes the sale of 25 call options for the VIX with a strike price of 12.5 expiring on August 21 2024. It shows that 25 call options were sold (as indicated by the -25) at a price of \$3.35 each. This is evident from the designation C in the options contract which stands for Call.
-        Corect Output: [FXI Open Long]
         """
-        user_prompt = "Is this tweet referring to the opening or closing of a stock position? If it is, please also list the corresponding ticker and whether it is long or short. If it is not referring to the opening or closing of a position, simply put neither. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
+        user_prompt = "Is this tweet referring to long or short? If it is, please also list the corresponding ticker and whether it is long or short. If it is NOT referring to the opening or closing of a position, simply put neither. Ignore any play that is bidirectional or sideways. Please respond in the possible formats: [Open/Close TICKER Long/Short] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list."
         
         # Dynamically prompt openAI and retrieve stock trades synthesis
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)

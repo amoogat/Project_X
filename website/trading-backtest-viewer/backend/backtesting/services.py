@@ -14,13 +14,15 @@ from selenium.webdriver.support import expected_conditions as EC
 from.models import StockData
 import httpx
 import asyncio
+from paddleocr import PaddleOCR,draw_ocr
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
 if config_path not in sys.path:
     sys.path.append(config_path)
 import big_baller_moves
 
-debug_level = 0
+debug_level = 2
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MarketEnvironment:
@@ -296,19 +298,19 @@ def parallel_optimize_strategy(df, param_ranges):
 
 class GPTTwitter:
     def __init__(self, username):
+        self.drivers = []
         self.username = username
         self.client = tweepy.Client(bearer_token=big_baller_moves.bossman_tingz["twitter_api_key"])
         self.auth = tweepy.OAuth1UserHandler(
             big_baller_moves.bossman_tingz["consumer_key"], 
             big_baller_moves.bossman_tingz["consumer_secret"], 
             big_baller_moves.bossman_tingz["access_token"], 
-            big_baller_moves.bossman_tingz["access_token_secret"]
-        )
+            big_baller_moves.bossman_tingz["access_token_secret"])
         self.api = tweepy.API(self.auth)
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
         self.user_id = self.get_user_id()
         self.heisenberg_tweets = pd.DataFrame()
-        self.drivers = []
+        self.ocr = PaddleOCR(use_angle_cls=True, lang="ch") 
 
     def get_user_id(self):
         # Needed for tweepy :)
@@ -346,16 +348,37 @@ class GPTTwitter:
         cleaned_message = message.replace('[','').replace(']','').replace('\\', '')
         if len(cleaned_message.split()) > 1:
             return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
-    
-    async def get_response_image(self, text):
-        # Asynchronously gets the stock purchase information out of an image from OpenAI 4o
-        if not text:
-            return "No image available"
-        if not isinstance(text, str):
-            logging.error(f"Unexpected text format: {text}")
-            text = text[0]
         
-        url = "https://api.openai.com/v1/chat/completions"
+    def transcribe_image(self, url):
+        result = self.ocr.ocr(url, cls=True)
+        res_string = ''
+        fixed_dim = 2000  
+        scale_factor = 1000
+        # Process and scale the data
+        for idx in range(len(result)):
+            res = result[idx]
+            for line in res:
+                text = line[1][0]  
+                bounding_box = line[0]
+                if any(isinstance(coord, list) for coord in bounding_box):
+                    bounding_box = [item for sublist in bounding_box for item in sublist]
+                normalized_box = [((coord / fixed_dim) * scale_factor) for coord in bounding_box]
+                box_pairs = zip(*[iter(normalized_box)]*2)  
+                box_str = ','.join([f"({x:.0f},{y:.0f})" for x, y in box_pairs])
+                res_string += f"Box:{box_str} Text:{text}"
+                if debug_level > 0:
+                    print(f"Box:{box_str} Text:{text}")
+        return res_string
+
+    
+    async def get_response_image(self, img_url):
+        # Gets [Open/Close] [Ticker] [Long/Short] from paddle ocr transcribed image data
+        if not img_url:
+            return "No image available"
+        if not isinstance(img_url, str):
+            img_url = img_url[0]
+        text = self.transcribe_image(img_url)
+        url = "https://api.openai.com/v1/chat/completions"  
         headers = {
             "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
             "Content-Type": "application/json"
@@ -364,21 +387,25 @@ class GPTTwitter:
             "model": "gpt-4o",
             "messages": [
                 {
+                    "role": "system",
+                    "content": "What kind of stock purchase is this transcribed image describing? If it is an option play, please specify if it is ultimately 1 of these: long, short, sideways, or bi-directional. Note that the numbers in brackets indicate the words positioning on the screen."
+                },
+                {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": "What kind of stock purchase is this image describing? If it is an option play, please specify if it is ultimately bullish (long) or bearish (short)."},
-                        {"type": "image_url", "image_url": {"url": text,"detail":"auto"}},
-                    ]
+                    "content": text
                 }
             ]
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content'].strip()
-            else:
-                logging.error(f"Failed to fetch data: {response.text}, Status Code: {str(response.status_code)}")
-                return None
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content'].strip()
+                else:
+                    logging.error(f"Failed to fetch data: {response.text}")
+                    return None
+            except httpx.RequestTimeout:
+                logging.error("Request timed out")
 
     async def dynamic_prompting(self, text, sys_prompt, user_prompt):
         # Asynchronously gets [Open/Close] [Ticker] [Long/Short] from tweet + image data
