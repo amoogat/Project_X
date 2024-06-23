@@ -165,6 +165,7 @@ def upload_file(request):
         for result in results_list:
             result_data = {
                 'username': username, 
+                'tweet_text': result.get('tweet_text',''),
                 'ticker': result.get('ticker', ''),
                 'created_at': result.get('created_at'),
                 'atr_multiplier': result.get('atr_multiplier', 0.0),
