@@ -40,7 +40,7 @@ class MarketEnvironment:
             dt = (dt + self.us_bd).replace(hour=9, minute=30)
         return dt
     
-    def save_stock_data(self, ticker, data, tweet_text):
+    def save_stock_data(self, ticker, data):
         try:
             # Saves stock data if not already in our database
             existing_dates = set(StockData.objects.filter(ticker=ticker).values_list('date', flat=True))
@@ -56,7 +56,6 @@ class MarketEnvironment:
                             ticker=ticker,
                             date=index,
                             close=row['Close'],
-                            tweet_text=tweet_text
                         )
                     )
             if bulk_list:
@@ -68,7 +67,7 @@ class MarketEnvironment:
         except Exception as e:
             logging.error(f"Failed to save stock data for {ticker}: {str(e)}")
 
-    def fetch_market_data(self, ticker, signal_date, tweet_text):
+    def fetch_market_data(self, ticker, signal_date):
         # Splits up data and attempts to download from YFINANCE 
         signal_date = self.adjust_to_trading_hours(signal_date)
         start_date_utc = (signal_date - timedelta(days=1)).astimezone(pytz.utc)
@@ -82,7 +81,7 @@ class MarketEnvironment:
                 data.index = data.index.tz_convert(pytz.timezone('America/New_York'))
                 data = data[(data.index <= end_date_utc)]
                 # Saves stock data, splits data into backtest and ATR calculation (6:1 ratio)
-                self.save_stock_data(ticker, data, tweet_text)
+                self.save_stock_data(ticker, data)
                 self.closest_time_index = data.index.get_loc(signal_date, method='nearest')
                 callout_price = data.at[data.index[self.closest_time_index], 'Close']
                 data_for_atr = data.loc[:data.index[self.closest_time_index + 1]]
@@ -134,7 +133,7 @@ class Backtester:
                 sold_at_date = date
                 break
             
-        # Calculate variance, max drawdown and sharpe ratio for future analyses
+        # Calculates variance, max drawdown and sharpe ratio for future analyses
         portfolio_variance = np.var(pd.Series(profit_losses)) if profit_losses else 0
         sharpe_ratio = total_return / np.sqrt(portfolio_variance) if portfolio_variance else 0
         return {
@@ -261,25 +260,38 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
             })
     return results
 
+def clean_response(response):
+    response = str(response).replace('\\n','\n ')
+    for item in  ['"',"b'","'",'$','*',',','\n']:
+        response = response.replace(item,'')
+    return response if response else ''
+
 def process_row(row,backtester,param_ranges):
     # Fetches market data for a ticker starting from a callout date, optimizes strategy
-    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']), row['text'])
+    data_for_atr, data_for_backtest, callout_price = backtester.market_env.fetch_market_data(row['ticker'], pd.to_datetime(row['created_at']))
+    
     if data_for_atr is not None and data_for_backtest is not None:
-        return optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
+        return row['text'], optimize_strategy(row['ticker'], row['created_at'], data_for_atr, data_for_backtest, callout_price, param_ranges, backtester)
     else:
-        return []
+        return '', []
     
 def parallel_optimize_strategy(df, param_ranges):
     # Optimizes a strategy using ATR
     backtester = Backtester()
-    results = []
+    all_results = []
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(process_row, row, backtester, param_ranges): row for _, row in df.iterrows()}
+        futures = [executor.submit(process_row, row, backtester, param_ranges) for _, row in df.iterrows()]
         for future in as_completed(futures):
-            result = future.result()
-            if result:
-                results.extend(result)
-    return pd.DataFrame(results)
+            tweet_text, results = future.result()
+            for result in results:
+                result['tweet_text'] = clean_response(tweet_text)
+            all_results.extend(results)
+
+    results_df = pd.DataFrame(all_results)
+    best_results = results_df.loc[results_df.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
+    best_results = best_results.sort_values(by='total_return', ascending=False)
+
+    return best_results
 
 
 class GPTTwitter:
@@ -308,7 +320,33 @@ class GPTTwitter:
         except Exception as e:
             logging.error("Error:" + str(e))
             return None
+        
+    def return_stock(self, message):
+        # Gets ticker name from message
+        message = message.decode('utf-8')
+        if message:
+            try:
+                parts = message.split()
+                if len(parts) > 1:
+                    stock = parts[1].replace('[','').replace(']','').replace('\\', '').upper()
+                    # Further validation to check if the cleaned stock symbol is alphanumeric
+                    if stock.isalnum():
+                        if stock.upper() in ['VIX','VVIX']:
+                            stock = 'UVXY'
+                        return stock
+            except Exception as e:
+                logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
+        return None
 
+    def return_open_close(self, message):
+        # Gets open or close data from message
+        message = message.decode('utf-8')
+        if not message:
+            return 0
+        cleaned_message = message.replace('[','').replace(']','').replace('\\', '')
+        if len(cleaned_message.split()) > 1:
+            return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
+    
     async def get_response_image(self, text):
         # Asynchronously gets the stock purchase information out of an image from OpenAI 4o
         if not text:
@@ -377,16 +415,13 @@ class GPTTwitter:
         tasks = [self.get_response_image(url) for url in image_urls if url]
         return await asyncio.gather(*tasks)
     
-    def clean_response(self, response):
-        return str(response).replace('"', '').replace("'", '').replace('$', '\$').replace('*', '').replace(',', '') if response else ''
-    
     def get_tweets(self):
         # Uses tweepy for fetching tweets with relevant fields
         tweets_with_media = []
         media_dict = {}
         tweet_objects = self.client.get_users_tweets(id=self.user_id, max_results=25,
-                            tweet_fields=['id', 'text', 'created_at', 'attachments'],
-                            media_fields=['url'], expansions=['attachments.media_keys'])
+                        tweet_fields=['id', 'text', 'created_at', 'attachments'],
+                        media_fields=['url'], expansions=['attachments.media_keys'])
         if tweet_objects.includes and 'media' in tweet_objects.includes:
             media_dict = {media.media_key: media.url for media in tweet_objects.includes['media']}
         for tweet in tweet_objects.data:
@@ -397,7 +432,7 @@ class GPTTwitter:
             else:
                 tweets_with_media.append((tweet, []))
         return tweets_with_media
-
+        
     def process_tweets(self):
         self.df = pd.DataFrame([{
             'id': tweet_data[0].id,
@@ -420,20 +455,20 @@ class GPTTwitter:
                 image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
                 response_iterator = iter(image_responses)
                 for idx, urls in self.heisenberg_tweets[self.heisenberg_tweets['image_urls'].notnull()].iterrows():
-                    for url in urls['image_urls']:
+                    for _ in urls['image_urls']:
                         content = next(response_iterator, None)
                         if content:
-                            self.heisenberg_tweets.at[idx, 'image_response'] = (self.heisenberg_tweets.at[idx, 'image_response'] or '') + self.clean_response(content) + ' '
+                            self.heisenberg_tweets.at[idx, 'image_response'] = (self.heisenberg_tweets.at[idx, 'image_response'] or '') + clean_response(content) + ' '
             
-            # Combine text and transcribed image data into a full response
-            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(
-                lambda row: f"{self.clean_response(row['text'])} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
+            # Combines text and transcribed image data into a full response
+            self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(lambda row: f"{row['text']} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
 
             if debug_level > 1:
                 for i, row in self.heisenberg_tweets.iterrows():
                     logging.info('response: ' + str(row['full_response']) + '  image_urls: ' + str(row['image_urls']) + '\n==============')
         else:
             logging.error("No data to process. DataFrame is empty.")
+            
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
         # Async runs openAI calls tweet + transcribed image data -> [open/close] [Ticker] [Long/Close]
         if self.heisenberg_tweets is not None and not self.heisenberg_tweets.empty:
@@ -444,7 +479,7 @@ class GPTTwitter:
 
             responses = asyncio.run(fetch_and_process_all())
 
-            # Check if 'result' column can be added or if it already exists
+            # Checks if 'result' column can be added or if it already exists
             if 'result' in self.heisenberg_tweets.columns:
                 self.heisenberg_tweets['result'] = responses
             else:
@@ -452,5 +487,10 @@ class GPTTwitter:
                 
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_localize(None)
             self.heisenberg_tweets = self.heisenberg_tweets.applymap(lambda x: x.encode('utf-8') if isinstance(x, str) else x)
+            
+            self.heisenberg_tweets['ticker'] = self.heisenberg_tweets['result'].apply(self.return_stock)
+            self.heisenberg_tweets['buy'] = self.heisenberg_tweets['result'].apply(self.return_open_close)
+            self.heisenberg_tweets = self.heisenberg_tweets.loc[(self.heisenberg_tweets['ticker'].notnull()) & (self.heisenberg_tweets['buy'] == 1)]
+            self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_localize(None)
         else:
             logging.error("heisenberg_tweets DataFrame is empty or not initialized.")

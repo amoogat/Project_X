@@ -4,7 +4,7 @@ from rest_framework.response import Response
 import logging, pytz
 import pandas as pd
 import numpy as np
-from .models import BacktestResult, get_default_strategy, StockData
+from .models import BacktestResult, StockData
 from .services import parallel_optimize_strategy, GPTTwitter, Backtester
 from .serializers import BacktestResultSerializer
 from django.views.decorators.csrf import csrf_exempt
@@ -15,32 +15,6 @@ from django.utils.decorators import method_decorator
 
 debug_level = 0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def return_stock(message):
-    # Gets ticker name from message
-    message = message.decode('utf-8')
-    if message:
-        try:
-            parts = message.split()
-            if len(parts) > 1:
-                stock = parts[1].replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','').upper()
-                # Further validation to check if the cleaned stock symbol is alphanumeric
-                if stock.isalnum():
-                    if stock.upper() in ['VIX','VVIX']:
-                        stock = 'UVXY'
-                    return stock
-        except Exception as e:
-            logging.error(f"Error processing stock information from message: {message}, error: {str(e)}")
-    return None
-
-def return_open_close(message):
-    # Gets open or close data from message
-    message = message.decode('utf-8')
-    if not message:
-        return 0
-    cleaned_message = message.replace('[','').replace(']','').replace('$', '').replace('\\', '').replace('*','')
-    if len(cleaned_message.split()) > 1:
-        return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
     
 def ensure_timezone(dt, tz):
     # Ensure datetime is timezone-aware
@@ -54,6 +28,14 @@ def round_to_nearest_minute(dt):
     if dt.second >= 30:
         dt += timedelta(minutes=1)
     return dt.replace(second=0, microsecond=0)
+
+def serialize_data(data):
+    serializer = BacktestResultSerializer(data=data)
+    if serializer.is_valid():
+        serializer.save()
+    else:
+        logging.error(f"Serializer error: {str(serializer.errors)}")
+        return Response(serializer.errors, status=400)
 
 @csrf_exempt
 @api_view(['POST'])
@@ -134,17 +116,10 @@ def upload_file(request):
         # Dynamically prompt openAI and retrieve stock trades synthesis
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
         df = twitter_processor.heisenberg_tweets.copy()
-        df['ticker'] = df['result'].apply(return_stock)
-        df['buy'] = df['result'].apply(return_open_close)
-        df = df.loc[(df['ticker'].notnull()) & (df['buy'] == 1)]
-        df['created_at'] = pd.to_datetime(df['created_at']).dt.tz_localize(None)
         
         # Optimizes strategy so we can backtest username
-        results = parallel_optimize_strategy(df, param_ranges)
-        best_results = results.loc[results.groupby(['ticker', 'created_at'])['total_return'].idxmax()]
-        best_results = best_results.sort_values(by='total_return', ascending=False)
+        best_results = parallel_optimize_strategy(df, param_ranges)
         results_list = best_results.to_dict('records')
-        default_strategy_id = get_default_strategy()
         best_results_sorted_by_date = best_results.sort_values(by='created_at')
 
         # Whole market backtest, needs first bought and last sold timestamps
@@ -190,7 +165,6 @@ def upload_file(request):
         for result in results_list:
             result_data = {
                 'username': username, 
-                'strategy': default_strategy_id,
                 'ticker': result.get('ticker', ''),
                 'created_at': result.get('created_at'),
                 'atr_multiplier': result.get('atr_multiplier', 0.0),
@@ -241,10 +215,8 @@ class StockDataView(APIView):
         for data in stock_data:
             dates.append(data.date)
             prices.append(float(data.close))
-            tweet_text = data.tweet_text
         response_data = {
             'ticker': ticker,
-            'tweet_text': tweet_text.replace('\\n', '\n').replace('\n', ' '),
             'chartData': {
                 'dates': dates,
                 'prices': prices
