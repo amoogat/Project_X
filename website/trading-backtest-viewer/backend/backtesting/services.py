@@ -263,8 +263,8 @@ def optimize_strategy(ticker, created_at, data_for_atr, data_for_backtest, callo
     return results
 
 def clean_response(response):
-    response = str(response).replace('\\n','\n ')
-    for item in  ['"',"b'","'",'$','*',',','\n']:
+    response = str(response).replace('\\n','\n ').replace('$','\$')
+    for item in  ['"',"b'","'",'*',',','\n']:
         response = response.replace(item,'')
     return response if response else ''
 
@@ -310,7 +310,7 @@ class GPTTwitter:
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
         self.user_id = self.get_user_id()
         self.heisenberg_tweets = pd.DataFrame()
-        self.ocr = PaddleOCR(use_angle_cls=True, lang="ch") 
+        self.ocr = PaddleOCR(use_angle_cls=True,lang="en", use_gpu=True) 
 
     def get_user_id(self):
         # Needed for tweepy :)
@@ -349,8 +349,12 @@ class GPTTwitter:
         if len(cleaned_message.split()) > 1:
             return 1 if ('Open' in cleaned_message) and ('Bullish' in cleaned_message) else 0
         
-    def transcribe_image(self, url):
+    async def transcribe_image(self, url):
         # Uses Paddle Paddle OCR to create a transcribed image data to save tokens
+        if not url:
+            return None
+        if not isinstance(url, str):
+            url = url[0]
         result = self.ocr.ocr(url, cls=True)
         res_string = ''
         fixed_dim = 2000  
@@ -370,22 +374,22 @@ class GPTTwitter:
                 if debug_level > 0:
                     logging.info(f"Box:{box_str} Text:{text}")
         return res_string
-
     
-    async def get_response_image(self, img_url):
+    async def transcribe_images(self,image_urls):
+        tasks = [self.transcribe_image(url) for url in image_urls if url]
+        return await asyncio.gather(*tasks)
+    
+    async def get_response_transcribed_image(self, transcribed_image_text):
         # Gets [Open/Close] [Ticker] [Bullish/Short] from 
-        if not img_url:
+        if not transcribed_image_text:
             return "No image available"
-        if not isinstance(img_url, str):
-            img_url = img_url[0]
-        text = self.transcribe_image(img_url)
         url = "https://api.openai.com/v1/chat/completions"  
         headers = {
             "Authorization": f"Bearer {big_baller_moves.bossman_tingz['openai_api_key']}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "gpt-4o",
+            "model": "gpt-3.5-turbo",
             "messages": [
                 {
                     "role": "system",
@@ -393,7 +397,7 @@ class GPTTwitter:
                 },
                 {
                     "role": "user",
-                    "content": text
+                    "content": transcribed_image_text
                 }
             ]
         }
@@ -407,7 +411,11 @@ class GPTTwitter:
                     return None
             except Exception as e:
                 logging.error("Request timed out")
-
+                
+    async def fetch_image_responses(self,transcribed_images):
+        tasks = [self.get_response_transcribed_image(transcribed_image) for transcribed_image in transcribed_images if transcribed_image]
+        return await asyncio.gather(*tasks)
+    
     async def dynamic_prompting(self, text, sys_prompt, user_prompt):
         # Asynchronously gets [Open/Close] [Ticker] [Long/Short] from tweet + image data
         url = "https://api.openai.com/v1/chat/completions"  
@@ -416,7 +424,7 @@ class GPTTwitter:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "gpt-4o",
+            "model": "gpt-3.5-turbo",
             "messages": [
                 {
                     "role": "system",
@@ -438,10 +446,6 @@ class GPTTwitter:
                     return None
             except Exception as e:
                 logging.error("Request timed out")
-
-    async def fetch_image_responses(self,image_urls):
-        tasks = [self.get_response_image(url) for url in image_urls if url]
-        return await asyncio.gather(*tasks)
     
     def get_tweets(self):
         # Uses tweepy for fetching tweets with relevant fields
@@ -460,7 +464,7 @@ class GPTTwitter:
             else:
                 tweets_with_media.append((tweet, []))
         return tweets_with_media
-        
+    
     def process_tweets(self):
         self.df = pd.DataFrame([{
             'id': tweet_data[0].id,
@@ -472,22 +476,31 @@ class GPTTwitter:
         if not self.df.empty:
             self.heisenberg_tweets = self.df[['id', 'text', 'created_at', 'image_urls']].copy()
             self.heisenberg_tweets['image_response'] = None
+            self.heisenberg_tweets['transcribed_image'] = None 
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_convert('America/New_York')
             self.heisenberg_tweets['image_urls'] = self.heisenberg_tweets['image_urls'].apply(lambda x: x if x else None)
-
-            # Filtering non-null URLs for processing
-            non_null_urls = [url for sublist in self.heisenberg_tweets['image_urls'].dropna().tolist() for url in sublist]
-            
-            if non_null_urls:
-                # Runs the OpenAI calls to turn an image -> transcribed image data
-                image_responses = asyncio.run(self.fetch_image_responses(non_null_urls))
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Map each future to its corresponding DataFrame index
+                futures = {executor.submit(asyncio.run, self.transcribe_images(row['image_urls'])): idx for idx, row in self.heisenberg_tweets.iterrows()}
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        result = future.result()
+                        self.heisenberg_tweets.at[idx, 'transcribed_image'] = result
+                    except Exception as e:
+                        self.heisenberg_tweets.at[idx, 'transcribed_image'] = None
+     
+            # Uses the Paddle OCR package to turn a direct transcription of image data -> openAI interpreted transcribed image data
+            non_null_responses = [response for sublist in self.heisenberg_tweets['transcribed_image'].dropna().tolist() for response in sublist] 
+            if non_null_responses:
+                image_responses = asyncio.run(self.fetch_image_responses(non_null_responses))
                 response_iterator = iter(image_responses)
-                for idx, urls in self.heisenberg_tweets[self.heisenberg_tweets['image_urls'].notnull()].iterrows():
-                    for _ in urls['image_urls']:
+                for idx, transcribed_images in self.heisenberg_tweets[self.heisenberg_tweets['transcribed_image'].notnull()].iterrows():
+                    for _ in transcribed_images['transcribed_image']:
                         content = next(response_iterator, None)
                         if content:
                             self.heisenberg_tweets.at[idx, 'image_response'] = (self.heisenberg_tweets.at[idx, 'image_response'] or '') + clean_response(content) + ' '
-            
+                            
             # Combines text and transcribed image data into a full response
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(lambda row: f"{row['text']} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
         else:
