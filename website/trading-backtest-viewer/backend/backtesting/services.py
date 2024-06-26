@@ -14,7 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from.models import StockData
 import httpx
 import asyncio
-from paddleocr import PaddleOCR,draw_ocr
+from paddleocr import PaddleOCR
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -347,9 +347,10 @@ class GPTTwitter:
             return 0
         cleaned_message = message.replace('[','').replace(']','').replace('\\', '')
         if len(cleaned_message.split()) > 1:
-            return 1 if ('Open' in cleaned_message) and ('Long' in cleaned_message) else 0
+            return 1 if ('Open' in cleaned_message) and ('Bullish' in cleaned_message) else 0
         
     def transcribe_image(self, url):
+        # Uses Paddle Paddle OCR to create a transcribed image data to save tokens
         result = self.ocr.ocr(url, cls=True)
         res_string = ''
         fixed_dim = 2000  
@@ -367,12 +368,12 @@ class GPTTwitter:
                 box_str = ','.join([f"({x:.0f},{y:.0f})" for x, y in box_pairs])
                 res_string += f"Box:{box_str} Text:{text}"
                 if debug_level > 0:
-                    print(f"Box:{box_str} Text:{text}")
+                    logging.info(f"Box:{box_str} Text:{text}")
         return res_string
 
     
     async def get_response_image(self, img_url):
-        # Gets [Open/Close] [Ticker] [Long/Short] from paddle ocr transcribed image data
+        # Gets [Open/Close] [Ticker] [Bullish/Short] from 
         if not img_url:
             return "No image available"
         if not isinstance(img_url, str):
@@ -388,7 +389,7 @@ class GPTTwitter:
             "messages": [
                 {
                     "role": "system",
-                    "content": "What kind of stock purchase is this transcribed image describing? If it is an option play, please specify if it is ultimately 1 of these: long, short, sideways, or bi-directional. Note that the numbers in brackets indicate the words positioning on the screen."
+                    "content": "What kind of stock purchase is this transcribed image describing? If it is an option play, please specify if it is: Bullish, Bearish, Sideways, or Bidirectional. If it leans one way or the other, say which way it ultimately leans. Note that the numbers in brackets indicate the words positioning on the screen."
                 },
                 {
                     "role": "user",
@@ -396,7 +397,7 @@ class GPTTwitter:
                 }
             ]
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(url, headers=headers, json=payload)
                 if response.status_code == 200:
@@ -404,7 +405,7 @@ class GPTTwitter:
                 else:
                     logging.error(f"Failed to fetch data: {response.text}")
                     return None
-            except httpx.RequestTimeout:
+            except Exception as e:
                 logging.error("Request timed out")
 
     async def dynamic_prompting(self, text, sys_prompt, user_prompt):
@@ -427,7 +428,7 @@ class GPTTwitter:
                 }
             ]
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(url, headers=headers, json=payload)
                 if response.status_code == 200:
@@ -435,7 +436,7 @@ class GPTTwitter:
                 else:
                     logging.error(f"Failed to fetch data: {response.text}")
                     return None
-            except httpx.RequestTimeout:
+            except Exception as e:
                 logging.error("Request timed out")
 
     async def fetch_image_responses(self,image_urls):
@@ -489,15 +490,11 @@ class GPTTwitter:
             
             # Combines text and transcribed image data into a full response
             self.heisenberg_tweets['full_response'] = self.heisenberg_tweets.apply(lambda row: f"{row['text']} TRANSCRIBED IMAGE DATA: {row.get('image_response', '')}", axis=1)
-
-            if debug_level > 1:
-                for i, row in self.heisenberg_tweets.iterrows():
-                    logging.info('response: ' + str(row['full_response']) + '  image_urls: ' + str(row['image_urls']) + '\n==============')
         else:
             logging.error("No data to process. DataFrame is empty.")
             
     def dynamic_prompt_and_save(self, sys_prompt, user_prompt):
-        # Async runs openAI calls tweet + transcribed image data -> [open/close] [Ticker] [Long/Close]
+        # Async runs openAI calls tweet + transcribed image data -> response for frontend
         if self.heisenberg_tweets is not None and not self.heisenberg_tweets.empty:
             async def fetch_and_process_all():
                 tasks = [self.dynamic_prompting(row['full_response'], sys_prompt, user_prompt) for _, row in self.heisenberg_tweets.iterrows()]
@@ -512,6 +509,10 @@ class GPTTwitter:
             else:
                 self.heisenberg_tweets = self.heisenberg_tweets.assign(result=responses)
                 
+            if debug_level > 1:
+                for i, row in self.heisenberg_tweets.iterrows():
+                    logging.info('response: ' + str(row['full_response']) + '  image_urls: ' + str(row['image_urls']) + '  result: ' + str(row['result']) + '\n==============')
+                    
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_localize(None)
             self.heisenberg_tweets = self.heisenberg_tweets.applymap(lambda x: x.encode('utf-8') if isinstance(x, str) else x)
             
