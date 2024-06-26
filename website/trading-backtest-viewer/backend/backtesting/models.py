@@ -1,28 +1,18 @@
 from django.db import models
 from datetime import datetime
 
-class Strategy(models.Model):
-    name = models.CharField(max_length=100)
-    description = models.TextField(default='Default strategy description')
-
-def get_default_strategy():
-    # Ensure there is at least one strategy available, or create one if not
-    strategy, created = Strategy.objects.get_or_create(name='Default Strategy', defaults={'description': 'Auto-created default strategy'})
-    return strategy.id
-
 class StockData(models.Model):
     ticker = models.CharField(max_length=10,default=' ')
     date = models.DateTimeField(default=datetime.now,blank=True)
     close = models.DecimalField(max_digits=10, decimal_places=2,default=0.00)
-    tweet_text = models.TextField(default = ' ')
     def __str__(self):
         return f"{self.ticker} data on {self.date.strftime('%Y-%m-%d')}"
 
 
 class BacktestResult(models.Model):
     username = models.CharField(max_length=100, default='')
-    strategy = models.ForeignKey(Strategy, on_delete=models.CASCADE, related_name='backtest_results', null=True)
     ticker = models.CharField(max_length=10, default=' ')
+    tweet_text = models.TextField(default=' ')
     created_at = models.DateTimeField(default=datetime.now, blank=True)
     atr_multiplier = models.FloatField(default=0.0)
     trailing_stop_multiplier = models.FloatField(default=0.0)
