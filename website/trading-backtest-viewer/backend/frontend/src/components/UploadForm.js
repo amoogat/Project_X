@@ -48,7 +48,6 @@ const UploadForm = () => {
           result.chartData = chartResponse.data.chartData;
           result.createdAtIndex = findNearestIndex(result.chartData.dates, result.created_at);
           result.saleIndex = findNearestIndex(result.chartData.dates, result.sold_at_date);
-          result.tweet_text = cleanString(chartResponse.data.tweet_text);
           return result;
         } catch (error) {
           console.error('Error fetching chart data:', error);
@@ -82,13 +81,6 @@ const UploadForm = () => {
     });
 
     return nearestIndex;
-  };
-
-  const cleanString = (input) => {
-    if (typeof input === 'string' && input.startsWith("b'")) {
-      return input.slice(2, -1).replace(/\\'/g, "'");
-    }
-    return input;
   };
 
   const toggleRow = (index) => {
