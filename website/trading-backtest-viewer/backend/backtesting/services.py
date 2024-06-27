@@ -5,16 +5,8 @@ from datetime import datetime, timedelta
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import openai, os, tweepy, time, logging, itertools, pytz, sys
-from itertools import cycle
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import openai, os, tweepy, time, logging, itertools, pytz, sys, httpx, asyncio
 from.models import StockData
-import httpx
-import asyncio
-from paddleocr import PaddleOCR
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config_path = os.path.abspath(os.path.join(BASE_DIR, '../../../..'))
@@ -297,7 +289,7 @@ def parallel_optimize_strategy(df, param_ranges):
 
 
 class GPTTwitter:
-    def __init__(self, username):
+    def __init__(self, username, paddle_api_url):
         self.drivers = []
         self.username = username
         self.client = tweepy.Client(bearer_token=big_baller_moves.bossman_tingz["twitter_api_key"])
@@ -310,8 +302,8 @@ class GPTTwitter:
         openai.api_key = big_baller_moves.bossman_tingz["openai_api_key"]
         self.user_id = self.get_user_id()
         self.heisenberg_tweets = pd.DataFrame()
-        self.ocr = PaddleOCR(use_angle_cls=True,lang="en", use_gpu=True) 
-
+        self.paddle_api_url = paddle_api_url
+        
     def get_user_id(self):
         # Needed for tweepy :)
         try:
@@ -350,32 +342,17 @@ class GPTTwitter:
             return 1 if ('Open' in cleaned_message) and ('Bullish' in cleaned_message) else 0
         
     async def transcribe_image(self, url):
-        # Uses Paddle Paddle OCR to create a transcribed image data to save tokens
-        if not url:
-            return None
-        if not isinstance(url, str):
-            url = url[0]
-        result = self.ocr.ocr(url, cls=True)
-        res_string = ''
-        fixed_dim = 2000  
-        scale_factor = 1000
-        # Process and scale the data
-        for idx in range(len(result)):
-            res = result[idx]
-            for line in res:
-                text = line[1][0]  
-                bounding_box = line[0]
-                if any(isinstance(coord, list) for coord in bounding_box):
-                    bounding_box = [item for sublist in bounding_box for item in sublist]
-                normalized_box = [((coord / fixed_dim) * scale_factor) for coord in bounding_box]
-                box_pairs = zip(*[iter(normalized_box)]*2)  
-                box_str = ','.join([f"({x:.0f},{y:.0f})" for x, y in box_pairs])
-                res_string += f"Box:{box_str} Text:{text}"
-                if debug_level > 0:
-                    logging.info(f"Box:{box_str} Text:{text}")
-        return res_string
-    
-    async def transcribe_images(self,image_urls):
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(self.paddle_api_url, json={"image_urls": [url]})
+                response.raise_for_status()
+                result = response.json()
+                return result['results'][0]['text'] if 'results' in result and result['results'] else None
+            except Exception as e:
+                logging.error(f"An error occurred: {e}")
+                return None
+
+    async def transcribe_images(self, image_urls):
         tasks = [self.transcribe_image(url) for url in image_urls if url]
         return await asyncio.gather(*tasks)
     
@@ -393,7 +370,7 @@ class GPTTwitter:
             "messages": [
                 {
                     "role": "system",
-                    "content": "What kind of stock purchase is this transcribed image describing? If it is an option play, please specify if it is: Bullish, Bearish, Sideways, or Bidirectional. If it leans one way or the other, say which way it ultimately leans. Note that the numbers in brackets indicate the words positioning on the screen."
+                    "content": "What kind of stock purchase is this transcribed image describing? If it is an option play, please specify if it is: Bullish, Bearish, Neutral, or Bidirectional. If it leans one way or the other, say which way it ultimately leans. Note that the numbers in brackets indicate the words positioning on the screen."
                 },
                 {
                     "role": "user",
@@ -479,6 +456,7 @@ class GPTTwitter:
             self.heisenberg_tweets['transcribed_image'] = None 
             self.heisenberg_tweets['created_at'] = pd.to_datetime(self.heisenberg_tweets['created_at']).dt.tz_convert('America/New_York')
             self.heisenberg_tweets['image_urls'] = self.heisenberg_tweets['image_urls'].apply(lambda x: x if x else None)
+            
             with ThreadPoolExecutor(max_workers=2) as executor:
                 # Map each future to its corresponding DataFrame index
                 futures = {executor.submit(asyncio.run, self.transcribe_images(row['image_urls'])): idx for idx, row in self.heisenberg_tweets.iterrows()}

@@ -54,7 +54,7 @@ def upload_file(request):
                 serializer.data[0].pop('portfolio_chart_data', None)
                 return Response({'status': 'success', 'data': serializer.data, 'portfolio_chart_data': portfolio_chart_data}, status=200)
 
-        twitter_processor = GPTTwitter(username)
+        twitter_processor = GPTTwitter(username, "http://127.0.0.1:8001/ocr/")
         try:
             twitter_processor.process_tweets()
         except Exception as e:
@@ -104,14 +104,14 @@ def upload_file(request):
         Text: \\$GME selling call spreads on watch.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
 
-        Text: For those who want to play the VIX but cannot because cough Robinhood cough, then I suggest SPY puts. It's pretty much the next best alternative.\\n\\nDon't give me that UVXY crap imo.  TRANSCRIBED IMAGE DATA: None
+        Text: For those who want to play the VIX but cannot because cough Robinhood cough, then I suggest SPY puts. It's pretty much the next best alternative.\\nDon't give me that UVXY crap imo.  TRANSCRIBED IMAGE DATA: None
         Correct Output: [Neither]
         response: FXI Open
 
-        Text: FXI Open Would not be surprised we get a decent bounce in the Hang Seng tonight and/or tomorrow night. https://t.co/voe0o6sdyQ TRANSCRIBED IMAGE DATA: The image describes the sale of 25 call options for the VIX with a strike price of 12.5 expiring on August 21 2024. It shows that 25 call options were sold (as indicated by the -25) at a price of \$3.35 each. This is evident from the designation C in the options contract which stands for Call.
+        Text: FXI Open Would not be surprised we get a decent bounce in the Hang Seng tonight and/or tomorrow night. https://t.co/voe0o6sdyQ TRANSCRIBED IMAGE DATA: The image describes the sale of 25 call options for the VIX with a strike price of 12.5 expiring on August 21 2024. It shows that 25 call options were sold (as indicated by the -25) at a price of \\$3.35 each. This is evident from the designation C in the options contract which stands for Call.
         Corect Output: [FXI Open Bullish]
         """
-        user_prompt = "Is this tweet referring to bullish, bearish, bidirectional or sideways? If so, please list the ticker and whether it is bullish, bearish, bidirectional, or sideways. If it is NOT referring to the opening or closing of a position, simply put neither. Please respond in the format: [Open/Close TICKER Bullish/Bearish/Bidirectional/Sideways] or [Neither]. If the a position falls into multiple categories, return the one it is ultimately in the required format. If the tweet refers to multiple positions, list them all in a comma separated list."
+        user_prompt = "Is this tweet referring to bullish, bearish, bidirectional or neutral? If so, please list the ticker and whether it is bullish, bearish, or neutral. If it is NOT referring to the opening or closing of a position, simply put neither. Please respond in the format: [Open/Close TICKER Bullish/Bearish/Neutral] or [Neither]. If the tweet refers to multiple positions, list them all in a comma separated list. If the position falls into multiple categories, return the one it is ultimately in the required format."
         
         # Dynamically prompt openAI and retrieve stock trades synthesis
         twitter_processor.dynamic_prompt_and_save(sys_prompt, user_prompt)
