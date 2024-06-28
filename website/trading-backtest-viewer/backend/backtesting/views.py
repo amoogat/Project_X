@@ -2,7 +2,6 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 import logging, pytz
-import pandas as pd
 import numpy as np
 from .models import BacktestResult, StockData
 from .services import parallel_optimize_strategy, GPTTwitter, Backtester
