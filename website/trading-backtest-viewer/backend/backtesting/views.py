@@ -12,7 +12,7 @@ from django.http import JsonResponse
 from datetime import timedelta
 from django.utils.decorators import method_decorator
 
-debug_level = 2
+debug_level = 0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
 def ensure_timezone(dt, tz):
@@ -45,7 +45,7 @@ def upload_file(request):
             return Response({'status': 'error', 'message': 'Username is required'}, status=400)
         # Checks if the username already has data in the database - skips process in production
         if debug_level < 2:
-            existing_results = BacktestResult.objects.filter(username=username).order_by('ticker', 'created_at').distinct('ticker', 'created_at')
+            existing_results = BacktestResult.objects.filter(username=username)
             if existing_results.exists():
                 # Serialize and return the existing results
                 serializer = BacktestResultSerializer(existing_results, many=True)
